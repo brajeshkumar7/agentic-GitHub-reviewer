@@ -1,23 +1,28 @@
-# Failure Modes and Recovery
+# Failure Modes and Recovery Contract
 
-The agent must record failures and recovery actions in `tool_activity` and `recovered_failures`. It must never convert missing evidence into a confident finding.
+All failures are observable, classified by the orchestrator, and bounded by `PROJECT_SPEC.md`. Adapters return typed failures; they do not retry or dispatch other tools themselves.
 
-| Failure | Detection | Recovery / result |
-|---|---|---|
-| Invalid or unsupported GitHub URL | URL parsing and host/path validation | Stop before network access; show a concise correction and return a CLI error. |
-| Repository not found or inaccessible | GitHub 404/403 or missing metadata | Do not retry as transient; explain that only public repositories are supported and return `failed`. |
-| Timeout or transient GitHub 5xx | Request exception or 5xx response | Retry a small bounded number of times with backoff; if still unavailable, return `partial` or `failed` with the failed step recorded. |
-| GitHub rate limit | 403/429 and rate-limit headers | Respect reset/retry guidance where practical; avoid tight retry loops; return a clear partial/failed result if the limit persists. |
-| Large repository/tree or source file | Configured file-count/size limits exceeded | Skip excess content deterministically, disclose coverage limits, and continue if enough evidence remains. |
-| No usable Python files | Tree selection yields no supported source | Return a clear unsupported/limited result; do not imply Python analysis occurred. |
-| Malformed Groq response or invalid report structure | Parse/schema validation fails | Make at most one bounded repair attempt using supplied evidence; otherwise emit a minimal valid error report or fail clearly. |
-| Groq timeout, authentication, or quota error | Client exception/status | Do not expose credentials; retry only transient failures; if synthesis is unavailable, return deterministic findings with a clear unsynthesized limitation when possible. |
-| AST parse error in a source file | Parser error with file and line | Record the file as skipped and continue with remaining files; do not execute it. |
-| Failure injection for demonstration | Explicit demo option names a simulated failure point | Raise the selected synthetic failure once, route it through normal recovery, and record injection and outcome in the trace/report. |
+| Failure mode | Detection | Allowed response | Terminal/report behavior |
+|---|---|---|---|
+| Tool timeout | Connect/read deadline exceeded | Retry once if transient and budget remains | Record attempts; exhaustion fails step, skips blocked dependents, and allows only independent work. |
+| Invalid tool response | Schema/type validation fails, field missing, or value out of range | One retry for transient/provider anomaly; never accept malformed data as evidence | Record validation error; persistent failure loses that evidence and is disclosed. |
+| Malformed planner output | Invalid schema/JSON, unknown tool, cycles, unsafe args, or >8 steps | One planner repair, then full validation again | No tools before valid plan; exhaustion returns `failed`. |
+| Empty search results | Successful response has no candidates | One revised query/step through the single plan-repair allowance when useful | If still empty, return partial/failed with no fabricated developments. |
+| URL fetch failure | HTTP error, unsafe destination, timeout, unsupported content, or no extractable text | Retry once only for transient errors; permanent/policy errors are not retried | Exclude page as evidence; continue with other sources; lower item count/status if verification fails. |
+| Calculator failure | Invalid operation/operand, overflow, or divide by zero | Repair input only if validated and within plan-repair budget | Mark dependent comparison unavailable and disclose omitted calculation. |
+| LLM/API failure | Groq timeout, quota/rate limit, auth/config error, malformed response | Retry once only for transient errors; schema repair remains bounded by model/plan budgets | Never log key; use deterministic evidence only where contract permits, otherwise partial/failed. |
+| Insufficient evidence | Fewer than two independent fetched sources, unverifiable date, contradiction, or weak support | Search/fetch more only within plan and invocation limits; do not lower the bar silently | Report fewer developments or mark unverified; state limitation. |
+| Execution-step failure | Permanent tool error, missing prerequisite, or executor invariant failure | Enter `RECOVERING`; retry/repair only within budget | Mark step `FAILED`, dependents `SKIPPED`; preserve prior evidence and produce partial/failed report. |
+| Retry exhaustion | Per-step or run-wide budget consumed | No further attempt or nested retry | Record exhaustion and final state; never loop. |
+| Unsafe/malicious page content | Prompt injection, unsafe links, malformed content | Treat as data; ignore instructions; validate content; do not follow embedded links automatically | Record a limitation if blocked content affects evidence. |
+| Report validation failure | Missing field, invalid status/time, dangling evidence ID | One bounded repair using validated evidence ledger | If still invalid, emit minimal valid failure report or explicit process error; never emit invalid success. |
+| Injected failure | Demo option names allowlisted tool and failure mode | Inject once at adapter boundary and route through normal recovery | Include injection/recovery in events/report; disabled unless explicitly selected. |
 
-## Recovery rules
+## Global recovery rules
 
-- Retries are bounded and apply only to transient failures; invalid input, not-found responses, and authentication errors are not retried.
-- Preserve successful evidence if a later step fails and label the report `partial` when it remains useful.
-- Use `failed` when the repository cannot be identified or no meaningful review can be completed.
-- Include skipped checks and remaining limitations in the final report.
+- Maximum 2 total attempts per tool step, including initial attempt; 20 tool invocations per run including retries.
+- Maximum 2 attempts for each model operation; at most one plan repair/replan per run.
+- Retry only timeouts, transient 5xx, or provider-declared temporary throttles; respect retry timing only when it fits the budget.
+- Never retry invalid input, unsafe destinations, permanent not-found/authorization errors, or deterministic calculator errors without a validated repair.
+- Every recovery action is an explicit transition from `RECOVERING`; every failure/retry is a structured event.
+- Preserve valid evidence; mark partial work honestly. Never fill gaps with unsupported model-generated claims.

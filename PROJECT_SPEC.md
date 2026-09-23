@@ -1,49 +1,102 @@
-# Project Specification: Agentic GitHub Repository Reviewer
+# Project Specification: Autonomous Research Intelligence Agent
 
-## Goal
+## Purpose
 
-Build a small Python CLI agent that accepts a public GitHub repository URL, plans a review, gathers repository data, performs Python-focused static checks, and returns an evidence-backed report. It is an internship take-home prototype intended to demonstrate planning, tool orchestration, recovery, and clear communication.
+Build a Python CLI agent that accepts a natural-language research goal, creates and validates an executable plan, runs it through approved tools, recovers from bounded failures, and returns a structured research brief with traceable evidence. The initial use case is researching recent developments in a topic, verifying candidates with reliable sources, comparing them, and summarizing the results.
 
-## MVP scope
+## Functional requirements
 
-- Accept one public GitHub repository URL per run.
-- Validate and normalize the URL before making network requests.
-- Display a concise, human-readable plan before acting. Show action and tool summaries as the run proceeds; do not expose private model reasoning.
-- Use Groq for planning and report synthesis. Keep the API key and model selection in environment configuration.
-- Use GitHub's public REST API to retrieve repository metadata, the file tree, and relevant Python source files.
-- Analyze Python source without executing repository code. Initial checks should be deterministic and report verifiable evidence such as file paths and line numbers.
-- Return a structured JSON result, with a readable Markdown rendering available as a CLI presentation.
-- Recover from at least one deliberately induced tool failure and record the recovery in the result.
+1. Accept one non-empty natural-language goal per run. Resolve relative time windows against a UTC run-start timestamp. If none is given, default to the preceding seven days and disclose that default.
+2. Use the configured Groq model to propose a concise structured plan before any research tool is called.
+3. Validate before execution: 1–8 uniquely identified steps, known tool names, schema-valid arguments, valid acyclic dependencies, and a success condition for every step. Reject or repair invalid output within retry limits.
+4. Execute approved steps sequentially through the state machine in `ARCHITECTURE.md`. A dependent step starts only when prerequisites succeed or a validated recovery decision explicitly skips a dependency.
+5. Provide three tools: web search, HTTPS page fetch, and deterministic calculator. A successful research run must use search and page fetch (two distinct tools); use calculator when the goal requires arithmetic. Search snippets alone are never verification evidence.
+6. Verify each reported development using at least two independent fetched sources where available, preferring a primary source plus independent corroboration. If evidence is insufficient, report fewer than three developments or mark a candidate unverified; never invent support to fill a quota.
+7. Select up to three developments within the requested window by relevance to goal, recency, evidence quality, and independent corroboration. Break ties by newer verified publication date, then greater independent-source count. Disclose selection limits.
+8. Detect malformed, empty, contradictory, stale, oversized, or failed tool results; record the issue, attempt bounded recovery, and preserve valid evidence already collected.
+9. Produce the JSON report below and a visible event trace without hidden model reasoning.
+10. Provide deterministic one-shot failure injection for a sample run/test; it must use the normal executor and recovery path.
 
-## Out of scope for the first version
+## Non-functional requirements
 
-- Private repositories, authenticated GitHub access, cloning, or running target code.
-- Comprehensive vulnerability detection, semantic correctness claims, or guaranteed bug discovery.
-- Non-Python language-specific analysis, persistent storage, a web UI, and automatic code changes.
+- Python 3.11+ CLI. This specification defines behavior, not application code.
+- Tool, model, and report boundaries are validated and independently mockable.
+- Hard limits: 8 plan steps; 20 total tool invocations per run including retries; 2 attempts per tool step total; 2 attempts per model operation; at most one plan repair/replan per run.
+- Apply finite connect/read timeouts and configured response, page, search-result, and token limits. Exact byte/time/token values are an implementation gate recorded in `DECISIONS.md` before adapters are coded.
+- Offline tests require no API keys, paid inference, or live network access.
+- Reports cite evidence, identify uncertainty, distinguish verified facts from interpretation, and disclose skipped work.
+- Logs and traces contain no API keys or private model reasoning.
 
-## User interaction
+## Input and output behavior
 
-The CLI takes a repository URL as its required argument. It may accept an output format and a failure-simulation option for demonstration. It prints the normalized target, proposed review steps, progress/tool summaries, and final status. Errors must be understandable and must not print secrets or raw credentials.
+### Input
 
-## Report contract
+- Required: one natural-language goal as the CLI positional argument.
+- Optional: `--simulate-failure TOOL:MODE` for demonstration/testing only; tool and failure names must be allowlisted and injection is disabled by default.
+- Capture `run_started_at` once in UTC and use it for all relative date windows.
+- Missing goal is a CLI usage error and causes no model/tool calls.
 
-The JSON result contains:
+### Output
 
-- `status`: `completed`, `partial`, or `failed`.
-- `repository`: canonical URL, owner/name, default branch when available, and detected primary language.
-- `summary`: concise review overview.
-- `findings`: list of `{id, category, severity, title, evidence, why_it_matters, suggested_fix, confidence}`. Each evidence item identifies a repository-relative path and line or line range when available.
-- `tool_activity`: ordered summaries of tools called and their outcomes, without hidden reasoning or secrets.
-- `recovered_failures`: failures, recovery action, and outcome.
-- `limitations`: analysis coverage and any unavailable or skipped checks.
+- Standard output: one valid JSON report on completion or handled failure.
+- Standard error: concise plan, state/event summaries, and progress; no hidden reasoning or secret values.
+- Exit code zero for `completed`, nonzero for `partial` or `failed`.
 
-Malformed or unsupported repository content must not be presented as a successful full review. If there is not enough evidence to produce a finding, omit it rather than inventing one.
+### Final report schema, version 1
 
-## MVP acceptance criteria
+Top-level fields:
 
-1. A valid public Python repository URL produces a visible plan, tool summaries, and a structured report.
-2. At least two distinct tools are used: GitHub REST retrieval and local Python AST analysis.
-3. Findings cite source evidence and distinguish observations from suggestions.
-4. A deliberate failure is handled or reported gracefully and appears in `recovered_failures` or the failed/partial status.
-5. Setup and run instructions, an architecture diagram, and two or three sample run transcripts are delivered with the implementation.
-6. Synthetic tests cover successful analysis, invalid input, network/API failure, malformed model output, and injected failure recovery without paid inference or live network access.
+- `schema_version`: fixed `1.0`; `run_id`; `status` (`completed`, `partial`, `failed`); `goal`; `run_started_at`; `run_finished_at` (ISO 8601 UTC).
+- `research_brief`: `topic`, `time_window_start`, `time_window_end`, `summary`, `developments` (0–3 entries with `rank`, `title`, `published_at`, `description`, `relevance`, `comparison_note`, `confidence`, `evidence_ids`), `comparison`, `conclusion`.
+- `sources`: entries with `evidence_id`, canonical `url`, `title`, `publisher`, nullable `published_at`, `retrieved_at`, `source_type` (`primary`, `independent_secondary`, `other`), and `supports` identifiers.
+- `plan`: validated steps with `step_id`, `description`, `tool_name`, `status`, and `depends_on`.
+- `execution`: ordered observable events, tool-call summaries, retry counts, and recovered failures.
+- `limitations`: omitted checks, weak/unavailable evidence, date ambiguities, and incomplete steps.
+
+Every development `evidence_id` must exist in `sources`. `completed` means planned research and evidence checks passed; if fewer than three developments are verifiable, say so explicitly. Use `partial` when useful evidence exists but required work failed/remains incomplete, and `failed` when no trustworthy brief can be produced.
+
+## Tool contract
+
+Tools accept validated JSON and return typed success or typed failure. They do not select subsequent tools or edit the plan.
+
+### Web search
+
+- Input: `query`, optional UTC date bounds, and bounded `max_results`.
+- Output: ordered results `{title, url, snippet, published_at?}` and safe provider/request metadata.
+- Results are untrusted discovery data, not evidence until fetched and checked.
+
+### URL/page fetch
+
+- Input: one HTTPS URL from the validated goal or search results.
+- Output: `{final_url, title, publisher, published_at?, extracted_text, retrieved_at, truncated, status}`.
+- Restrict to public HTTPS content per `SECURITY.md`; reject unsafe destinations, redirects, content types, or oversized pages.
+
+### Calculator
+
+- Input: allowlisted operation (`add`, `subtract`, `multiply`, `divide`, `mean`, `percentage`) and numeric operands.
+- `add`, `subtract`, `multiply`, and `divide` require exactly two operands; `mean` requires at least one; `percentage` takes `[part, whole]` and returns `part / whole * 100`.
+- Output: numeric result and operation metadata, or typed invalid-input/divide-by-zero failure. Reject non-finite operands and non-finite results.
+- Use decimal-safe parsing; never evaluate arbitrary expressions/code.
+
+## Observable execution events
+
+Emit ordered structured events: `run_started`, `plan_created`, `plan_rejected`/`plan_validated`, `step_started`, `tool_call_started`, `tool_call_succeeded`/`tool_call_failed`, `retry_scheduled`, `recovery_applied`, `evidence_recorded`, `step_completed`/`step_skipped`, `report_validated`, `run_completed`.
+
+Each event includes `run_id`, UTC timestamp, event type, optional `step_id`/`tool_name`, attempt number, outcome, duration when available, and sanitized summary. Never log auth headers, API keys, full prompts, or unbounded page content.
+
+## Failure recovery
+
+- Route every tool/execution failure through the state-machine recovery handler; no direct adapter retry loops.
+- Allow at most 2 total attempts per tool step and 20 total tool invocations per run including retries.
+- Retry only classified transient failures; respect provider retry timing only if it fits the run budget.
+- Permit at most one validated repair/replan after malformed planning or a safely correctable execution step. Repaired plans re-enter validation before execution.
+- On unrecoverable failure, mark the step and dependents accurately, preserve valid evidence, produce `partial` or `failed`, and explain the limitation.
+- See `FAILURE_MODES.md` for the full catalog.
+
+## Explicitly out of scope
+
+- Private/authenticated sources, account login, paywall bypass, and credentials for researched sites.
+- Browser automation, email/social scraping, code execution, shell tools, and arbitrary plugins.
+- Autonomous purchases, external writes, persistent memory, scheduled research, multi-user service, or UI beyond the CLI.
+- Guaranteed discovery, legal/medical/financial advice, or claims of exhaustive verification.
+- Additional tools or domains without an approved decision in `DECISIONS.md`.

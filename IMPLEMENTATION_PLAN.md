@@ -1,39 +1,101 @@
-# Implementation Plan
+# Sequential Implementation Plan
 
-Build the smallest end-to-end vertical slice first, then harden its boundaries and demonstrate the assignment requirements.
+Implement one phase at a time. Do not start a later phase until the current phase's tests and acceptance criteria pass and `PROGRESS.md` records the result.
 
-## 1. Project foundation
+## Phase 0 — Project scaffold and configuration
 
-- Add Python 3.11+ project metadata, dependency and development setup, environment example, and a clear README.
-- Define the report types and CLI contract from `PROJECT_SPEC.md` before implementing orchestration.
-- Keep clients and analyzers independently replaceable for offline tests.
+**Objective:** establish a runnable Python project shell and safe configuration boundary.
 
-## 2. Input and retrieval
+**Files/components affected:** `pyproject.toml`, package entry point, `.env.example`, `.gitignore`, `README.md`, test configuration.
 
-- Implement CLI parsing and strict validation for public GitHub repository URLs.
-- Retrieve metadata and the recursive tree through GitHub REST; select a bounded set of Python files and fetch their content.
-- Handle missing repositories, unsupported/private access, oversized trees/files, rate limits, timeouts, and API errors without exposing credentials.
+**Implementation work:** create Python 3.11+ package/CLI shell; load environment config without committing secrets; establish output/event channels; document setup and placeholder invocation. No model/tool calls.
 
-## 3. Planning and analysis
+**Tests:** CLI help and missing-goal behavior; environment loading with/without optional keys; secret redaction/config validation.
 
-- Add an environment-configured Groq client and prompt it for a short, user-visible action plan.
-- Implement deterministic Python AST checks that produce findings with repository-relative evidence and line numbers.
-- Keep analysis bounded; never execute or import target repository code.
+**Acceptance criteria:** clean setup instructions; missing goal exits before external calls; no real key is tracked or logged.
 
-## 4. Orchestration and recovery
+**DO NOT IMPLEMENT YET:** planner, tool adapters, state machine, research logic, failure injection, or report synthesis.
 
-- Execute retrieval and analysis steps in order, recording concise tool activity.
-- Add bounded retries for transient failures and explicit handling for malformed model output.
-- Add a deterministic failure-injection option for the demo and return `partial` or `failed` when recovery cannot complete.
-- Validate the final report against the declared contract before rendering it.
+## Phase 1 — Goal, plan schema, and state-machine contracts
 
-## 5. Evaluation and assignment deliverables
+**Objective:** accept a goal and produce a validated visible plan without executing it.
 
-- Add synthetic Python repository fixtures and offline tests using fake GitHub and Groq clients.
-- Cover successful review, invalid URL, API timeout/rate limit, malformed synthesis, and injected failure.
-- Write two or three sample run transcripts showing plans, tool calls, recovery, and final results.
-- Complete the architecture diagram and a one-page design/limitations/future-work write-up, linked from the README.
+**Files/components affected:** input/config modules, plan schema/types, planner interface and Groq adapter, plan validator, state/event definitions.
 
-## Completion gate
+**Implementation work:** capture one UTC run-start time; parse seven-day default window when omitted; request structured plan; validate step count, IDs, tool names, arguments, dependencies, cycles; emit plan before dispatch.
 
-The project is ready to present when a new user can follow the README, run an online review with their own Groq key, run the offline evaluation without a key or network, inspect the visible plan/tool trace, and reproduce the deliberate failure demo.
+**Tests:** valid goal/plan; empty goal; malformed planner JSON; unknown tool; invalid arguments; duplicate IDs; dependency cycle; date boundaries/default; mocked Groq failure.
+
+**Acceptance criteria:** only a valid plan reaches `READY`; invalid output is rejected or repaired once and revalidated; trace shows plan validation before tool calls.
+
+**DO NOT IMPLEMENT YET:** live search, page fetching, calculator execution, evidence ranking, or report generation.
+
+## Phase 2 — Tool adapters and result validation
+
+**Objective:** implement the three approved tools behind validated, mockable interfaces.
+
+**Files/components affected:** search adapter/provider interface, HTTPS fetch adapter, calculator adapter, tool schemas, URL/content safety utilities, fake adapters.
+
+**Implementation work:** normalize search results; fetch validated public HTTPS pages; validate redirects/content type/size; extract bounded text/metadata; implement allowlisted decimal arithmetic; return typed outcomes without adapter-owned retries.
+
+**Tests:** valid/empty/malformed search; fetch success, timeout, redirect denial, unsupported content, oversized page; calculator operations and invalid/divide-by-zero input; fake rate limit.
+
+**Acceptance criteria:** inputs/results meet schemas; snippets remain unverified; URL protections and configured limits apply; adapters do not dispatch tools.
+
+**DO NOT IMPLEMENT YET:** autonomous multi-step execution, LLM evidence synthesis, broad source ranking, or sample transcripts.
+
+## Phase 3 — Executor, event trace, and bounded recovery
+
+**Objective:** execute validated plans through the state machine and recover safely.
+
+**Files/components affected:** orchestrator/state machine, dependency scheduler, recovery handler, event recorder, failure-injection harness, `FAILURE_MODES.md`.
+
+**Implementation work:** enforce legal transitions/dependency order; route all failures through recovery; cap each tool step at two total attempts, tool calls at 20/run, model operations at two attempts, plan repair at one/run; support one deterministic simulated failure.
+
+**Tests:** legal/illegal transitions; dependencies; timeout then success; exhaustion; malformed response; one plan repair; injected failure via normal recovery; event order/redaction.
+
+**Acceptance criteria:** no adapter bypasses orchestration; every failure is observable; budgets cannot be exceeded; recovery resumes only through allowed transitions.
+
+**DO NOT IMPLEMENT YET:** topic ranking, final brief, or source-verification claims.
+
+## Phase 4 — Evidence ledger, ranking, and report
+
+**Objective:** turn fetched source material into a cited, bounded research result.
+
+**Files/components affected:** evidence ledger/models, date/source validator, ranker, Groq synthesis interface/prompt, report schema/renderer/validator.
+
+**Implementation work:** store provenance/retrieval dates; enforce time window and two-independent-source target; select up to three developments by relevance, recency, evidence quality, corroboration; validate JSON and set status accurately.
+
+**Tests:** in/out-of-window dates; missing dates; duplicate/related sources; insufficient support; citation mismatch; <3 verified results; malformed report; status/schema checks.
+
+**Acceptance criteria:** every claim links to fetched evidence; unsupported claims are removed or marked unverified; all references validate; evidence insufficiency is disclosed.
+
+**DO NOT IMPLEMENT YET:** additional tools, persistent history, web UI, or scheduled runs.
+
+## Phase 5 — End-to-end evaluation and assignment materials
+
+**Objective:** demonstrate requirements with offline evaluation and reproducible examples.
+
+**Files/components affected:** tests/fixtures, `EVALUATION.md`, `ARCHITECTURE.md`, `README.md`, sample transcripts, one-page design write-up.
+
+**Implementation work:** create synthetic search/page data and mock clients; test full CLI offline; capture two or three runs including normal and recovery; document assumptions, limits, setup, operation.
+
+**Tests:** end-to-end search+fetch success; calculator comparison; empty search; insufficient evidence; API/model failures; injection recovery; report/events; no-key/no-network suite.
+
+**Acceptance criteria:** every assignment requirement maps to a passing test or artifact; transcripts match actual behavior and contain no secrets; tests repeat offline.
+
+**DO NOT IMPLEMENT YET:** unapproved domain expansion, new providers/tools, or features absent from `PROJECT_SPEC.md`.
+
+## Phase 6 — Final audit
+
+**Objective:** verify the submission against the contract and assignment rubric.
+
+**Files/components affected:** entire repository, especially control docs, README, architecture, tests, transcripts.
+
+**Implementation work:** reconcile behavior/spec; run documented checks; inspect a live research run if credentials/provider are available; audit secrets, citations, logs, failure states, limits; resolve doc drift and record status.
+
+**Tests:** complete offline suite; CLI setup/run smoke test; final schema/citation validation; transcript reproducibility; security/secret scan.
+
+**Acceptance criteria:** all phase gates pass; README works cleanly; architecture matches code; multi-tool use, visible plan, graceful injected recovery, structured result, and required artifacts are demonstrable.
+
+**DO NOT IMPLEMENT YET:** post-submission enhancements; record them for separate approval.

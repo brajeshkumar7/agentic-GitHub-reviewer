@@ -1,23 +1,31 @@
-# Progress
+# Project Progress
 
-## Documentation setup
+Initial baseline for the Autonomous Research Intelligence Agent. All implementation phases are intentionally incomplete; update only as phases pass their tests and acceptance criteria.
 
-- [x] Define project scope and report contract.
-- [x] Document the architecture and control flow.
-- [x] Record implementation sequence, agent guidance, decisions, failure modes, evaluation, and security constraints.
+## Phases
 
-## Implementation
+- [ ] **Phase 0 — Project scaffold and configuration:** Python CLI shell, setup/configuration, safe output conventions.
+- [ ] **Phase 1 — Goal, plan schema, and state-machine contracts:** natural-language input, structured planner output, validation, visible pre-execution plan.
+- [ ] **Phase 2 — Tool adapters and result validation:** web search, HTTPS page fetch, calculator, typed outcomes and safety bounds.
+- [ ] **Phase 3 — Executor, event trace, and bounded recovery:** state machine, dependency order, retries, failure injection.
+- [ ] **Phase 4 — Evidence ledger, ranking, and report:** source verification, date/relevance ranking, validated JSON research brief.
+- [ ] **Phase 5 — End-to-end evaluation and assignment materials:** synthetic tests, README, architecture diagram, 2–3 transcripts, one-page write-up.
+- [ ] **Phase 6 — Final audit:** acceptance, security, reproducibility, and documentation review.
 
-- [ ] Add Python project metadata, dependency setup, environment example, and README.
-- [ ] Implement CLI input validation and public GitHub retrieval.
-- [ ] Implement configurable Groq planning and evidence synthesis.
-- [ ] Implement bounded Python AST checks and structured report rendering.
-- [ ] Add orchestration, bounded retries, malformed-output handling, and failure injection.
+## Current gate
 
-## Evaluation and assignment deliverables
+- Current phase: **Phase 0 — not started**.
+- No application code or dependencies have been added.
+- Before coding, resolve the open items in `DECISIONS.md`: concrete search provider/API, resource limits, and operational source-reliability classification. Groq remains selected from the user's earlier direction; model identifier stays environment-configured.
 
-- [ ] Add offline synthetic fixtures and tests for success, invalid input, API errors, malformed model output, and injected recovery.
-- [ ] Capture two or three sample run transcripts with plan, tool activity, and final output.
-- [ ] Verify the architecture diagram against the implemented flow.
-- [ ] Write the one-page design decisions, limitations, and future-work summary.
-- [ ] Confirm a new user can set up and run the project from the README.
+## Phase evidence log
+
+| Phase | Status | Test/acceptance evidence | Notes |
+|---|---|---|---|
+| 0 | Incomplete | — | — |
+| 1 | Incomplete | — | — |
+| 2 | Incomplete | — | — |
+| 3 | Incomplete | — | — |
+| 4 | Incomplete | — | — |
+| 5 | Incomplete | — | — |
+| 6 | Incomplete | — | — |

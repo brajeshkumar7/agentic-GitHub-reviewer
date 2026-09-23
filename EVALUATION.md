@@ -9,10 +9,10 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 | Accept high-level natural-language goal | CLI accepts one goal and creates immutable run context | Normal-goal test; empty goal rejected before external calls |
 | Autonomously decompose into steps | Groq adapter returns text; Planner validates strict `Plan`/`PlanStep` schemas and PlanValidator binds the proposal to the goal | Offline fake planner tests cover valid output, malformed output and one repair, missing fields, unknown tools, >8 steps, and invalid dependencies |
 | Visible structured planning trace | Validated plan/state/tool events emitted before/during execution | Transcript asserts plan appears before first tool call |
-| Execute plan step by step | Orchestrator runs dependency-ordered steps | Assert tool call ordering and prerequisite gating |
+| Execute plan step by step | `ExecutionEngine` runs a validated plan in stable topological order through `ToolRegistry` | Offline engine tests assert sequential calls, dependency gating, result retention, and `SYNTHESIZING` handoff |
 | Use at least two tools | Successful research uses web search and page fetch; calculator available for arithmetic | End-to-end test asserts search+fetch; quantitative fixture asserts calculator |
 | Safe registered tool execution | `ToolRegistry` validates tool names, arguments, metadata and normalized outputs; each tool returns a `ToolResult` | Offline mocks assert registration/metadata, unknown-tool and invalid-argument failures, timeout/HTTP/malformed/empty search, safe URL rejection, content bounds, and invalid calculator grammar |
-| Detect tool/execution failures | Typed errors and state-machine failure events | Timeout, invalid response, empty results, blocked fetch, calculator, model, dependency cases |
+| Detect tool/execution failures | Typed tool results, preserved step failures, and ordered state/tool events in `AgentState` | Offline engine tests cover failed execution, unknown/unregistered tool, malformed result, timeout, retry exhaustion, dependency skip, and fatal `FAILED` state |
 | Recover from induced failure | One-shot injection uses normal `RECOVERING` path | Injected timeout asserts bounded retry, recovery event, accurate final status |
 | Structured final result | Versioned JSON report with brief, sources, plan, execution, failures, limitations | Schema, citation-reference, status, serialization tests |
 | Tests and documentation | Offline suite, setup/run README, control docs, architecture | Clean setup check and offline suite |
@@ -28,7 +28,7 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 - Quantitative comparison with known values to verify calculator behavior.
 - Fake Groq responses: valid plans/reports, malformed JSON, invalid tool names, dangling citations, transient/permanent failures.
 - Mocked Groq HTTP transport: assert configured environment model/key use, fixed provider endpoint, JSON response mode, bounded response size, no tool definitions, and sanitized errors without live network access.
-- Injected timeout, invalid response, retry exhaustion, and unsafe URL outcomes.
+- Injected timeout, invalid response, retry exhaustion, and unsafe URL outcomes. Current engine baseline has deterministic timeout mocks; one-shot failure injection remains deferred by D-030.
 
 ## Required scenarios
 

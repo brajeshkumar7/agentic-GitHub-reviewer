@@ -72,21 +72,21 @@ Implement one phase at a time. Do not start a later phase until the current phas
 
 **DO NOT IMPLEMENT YET:** multi-step execution, recovery orchestration, evidence ranking, or LLM report synthesis.
 
-## Phase 5 — Execution engine, state, events, and recovery (current phase)
+## Phase 5 — Execution engine, state, events, and recovery (current phase; baseline execution)
 
 **Objective:** execute validated plans in order and recover through the declared state machine.
 
 **Files/components affected:** execution engine, AgentState transitions, failure handler, event logger, failure-injection harness, tests.
 
-**Implementation work:** enforce legal transitions, dependency order, hard budgets, retry/fallback/replan policy, and deterministic one-shot failure injection.
+**Implementation work:** enforce legal transitions, stable dependency order, registry argument/result validation, hard dispatch and retry budgets, one bounded transient retry, failed-step preservation, dependent-step skipping, independent-step continuation, and structured event logging. Keep fallback selection, runtime replanning, and failure injection deferred as recorded in D-030.
 
-**Tests:** state transition invariants, step ordering, retry/fallback/replan outcomes, exhaustion, failure injection, event ordering/redaction.
+**Tests:** state transition invariants, sequential/dependency ordering, success/failure/unknown-tool/malformed-result/timeout paths, retry exhaustion, dependent-step skipping, fatal terminal failure, and event ordering.
 
-**Acceptance criteria:** tools can only run through the engine/registry; every failure is observable; budgets cannot be exceeded; offline recovery tests pass.
+**Acceptance criteria:** tools can only run through the engine/registry; every failure is observable and retained; dependencies and attempt/run budgets cannot be exceeded; offline engine tests pass. This baseline returns `SYNTHESIZING` after execution; report synthesis later selects the final terminal report state.
 
-**DO NOT IMPLEMENT YET:** long-term memory, parallel agents, new tools, UI, or scheduled research.
+**DO NOT IMPLEMENT YET:** advanced fallback/replanning, one-shot failure injection, long-term memory, parallel agents, new tools, UI, or scheduled research.
 
-## Phase 6 — Evidence and final report
+## Phase 6 — Evidence and final report (current phase)
 
 **Objective:** verify sources and synthesize the validated research brief.
 

@@ -45,6 +45,8 @@ class ExecutionEngine(Protocol):
 
 
 class ToolRegistry(Protocol):
+    def get(self, name: str) -> Tool: ...
+
     def metadata(self) -> list[ToolMetadata]: ...
 
     def validate_arguments(

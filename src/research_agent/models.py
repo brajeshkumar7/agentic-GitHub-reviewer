@@ -102,6 +102,7 @@ class EvidenceVerification(str, Enum):
 
 
 class EventType(str, Enum):
+    STATE_TRANSITION = "state_transition"
     RUN_STARTED = "run_started"
     PLAN_CREATED = "plan_created"
     PLAN_REJECTED = "plan_rejected"

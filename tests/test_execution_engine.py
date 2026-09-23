@@ -8,6 +8,7 @@ from uuid import uuid4
 import pytest
 
 from research_agent.event_logger import EventLogger
+from research_agent.config import AgentSettings
 from research_agent.execution_engine import ExecutionEngine
 from research_agent.limits import MAX_EXECUTION_STEPS, MAX_TOOL_ATTEMPTS
 from research_agent.models import (
@@ -278,16 +279,16 @@ def test_malformed_registry_result_is_recorded_as_failure() -> None:
     assert state.tool_results[0].failure.category is FailureCategory.INVALID_RESPONSE
 
 
-def test_timeout_retries_once_and_never_exceeds_configured_attempts() -> None:
+def test_timeout_retries_twice_and_never_exceeds_configured_attempts() -> None:
     goal = Goal(text="Calculate value", run_started_at=datetime.now(timezone.utc))
     tool = FakeCalculatorTool(["timeout", "timeout", "success"])
     state = execute_with_registry(tool=tool, plan=make_plan(goal), state=ready_state(goal))
 
     assert tool.calls == ["calculate"] * MAX_TOOL_ATTEMPTS
     assert len(state.tool_calls) == MAX_TOOL_ATTEMPTS
-    assert state.retry_counts["calculate"] == 1
-    assert state.step_statuses["calculate"] is StepStatus.FAILED
-    assert any(event.event_type is EventType.RETRY_SCHEDULED for event in state.events)
+    assert state.retry_counts["calculate"] == 2
+    assert state.step_statuses["calculate"] is StepStatus.SUCCEEDED
+    assert sum(event.event_type is EventType.RETRY_ATTEMPTED for event in state.events) == 2
 
 
 def test_run_wide_dispatch_budget_prevents_additional_tool_execution() -> None:

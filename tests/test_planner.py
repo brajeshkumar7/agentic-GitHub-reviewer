@@ -179,11 +179,12 @@ def test_planner_rejects_invalid_plan_after_bounded_retry(mutate: Any) -> None:
 
 
 def test_execution_and_retry_limits_are_declared() -> None:
-    from research_agent.limits import MAX_EXECUTION_STEPS, MAX_RETRY_COUNT
+    from research_agent.limits import MAX_EXECUTION_STEPS, MAX_MODEL_RETRIES, MAX_RETRIES_PER_STEP
 
     assert MAX_PLAN_STEPS == 8
     assert MAX_EXECUTION_STEPS == 20
-    assert MAX_RETRY_COUNT == 1
+    assert MAX_MODEL_RETRIES == 1
+    assert MAX_RETRIES_PER_STEP == 2
 
 
 def test_plan_step_json_schema_exposes_required_planner_fields() -> None:

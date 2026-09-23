@@ -112,7 +112,10 @@ class EventType(str, Enum):
     TOOL_CALL_SUCCEEDED = "tool_call_succeeded"
     TOOL_CALL_FAILED = "tool_call_failed"
     RETRY_SCHEDULED = "retry_scheduled"
+    RETRY_ATTEMPTED = "retry_attempted"
+    RECOVERY_STARTED = "recovery_started"
     RECOVERY_APPLIED = "recovery_applied"
+    FAILURE_INJECTED = "failure_injected"
     EVIDENCE_RECORDED = "evidence_recorded"
     STEP_COMPLETED = "step_completed"
     STEP_SKIPPED = "step_skipped"
@@ -181,6 +184,11 @@ class RecoveryReason(str, Enum):
     INVALID_OUTPUT = "invalid_output"
     PERMANENT_ERROR = "permanent_error"
     BUDGET_EXHAUSTED = "budget_exhausted"
+
+
+class FailureInjectionMode(str, Enum):
+    TOOL_TIMEOUT = "tool_timeout"
+    MALFORMED_TOOL_RESPONSE = "malformed_tool_response"
 
 
 class DevelopmentConfidence(float, Enum):

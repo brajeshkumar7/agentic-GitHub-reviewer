@@ -1,31 +1,66 @@
 # Failure Modes and Recovery Contract
 
-All failures are observable, classified by the orchestrator, and bounded by `PROJECT_SPEC.md`. Adapters return typed failures; they do not retry or dispatch other tools themselves.
+All tool failures pass through `FailureHandler`; adapters return structured results and never retry. The executor records the failed call, emits recovery events, and follows the deterministic policy below. No raw provider body or secret is included in event summaries.
 
-| Failure mode | Detection | Allowed response | Terminal/report behavior |
-|---|---|---|---|
-| Tool timeout | Connect/read deadline exceeded | Retry once if transient and budget remains | Record attempts; exhaustion fails step, skips blocked dependents, and allows only independent work. |
-| Search API failure | Brave timeout, 401/403, 429, 5xx, oversized body, or malformed JSON/results | Normalize to a typed failure; only transient timeout/429/5xx are retryable by the future engine | Never expose the subscription token or raw API body; invalid responses provide no candidates. |
-| Unknown or unregistered tool | Registry lookup or fixed-name validation fails | Reject lookup; dispatch returns a sanitized `INVALID_ARGUMENT` `ToolResult` where call identity is available | No tool is dispatched; the model cannot add registry entries. |
-| Invalid tool response | Schema/type validation fails, field missing, or value out of range | One retry for transient/provider anomaly; never accept malformed data as evidence | Record validation error; persistent failure loses that evidence and is disclosed. |
-| Malformed planner output | Invalid JSON/schema, missing fields, unknown tool, cycles, mismatched arguments, unsafe args, wrong goal ID, or >8 steps | One prompt-template repair attempt, then full Pydantic and plan validation again; malformed raw content is bounded before reuse and never logged | Return a sanitized controlled planning failure after two model attempts; no tools can run before a valid plan. |
-| Empty search results | Successful response has no candidates | One revised query/step through the single plan-repair allowance when useful | If still empty, return partial/failed with no fabricated developments. |
-| URL fetch failure | HTTP error, unsafe destination, timeout, unsupported content, or no extractable text | Retry once only for transient errors; permanent/policy errors are not retried | Exclude page as evidence; continue with other sources; lower item count/status if verification fails. |
-| Calculator failure | Unsupported expression node, invalid operation/operand, overflow, division by zero, oversized expression/AST | Typed non-retryable calculation failure; no input is executed | Mark dependent comparison unavailable and disclose omitted calculation. |
-| LLM/API failure | Groq timeout, quota/rate limit, auth/config error, malformed response | Retry once only for transient errors; schema repair remains bounded by model/plan budgets | Never log key; use deterministic evidence only where contract permits, otherwise partial/failed. |
-| Insufficient evidence | Fewer than two independent fetched sources, unverifiable date, contradiction, or weak support | Search/fetch more only within plan and invocation limits; do not lower the bar silently | Report fewer developments or mark unverified; state limitation. |
-| Execution-step failure | Permanent tool error, missing prerequisite, malformed result, or executor invariant failure | Current execution baseline enters `RECOVERY`, retries one retryable failure once, otherwise marks the step failed | Preserve tool result/failure details; skip dependent steps, continue independent work, and hand partial state to synthesis. Fatal plan/precondition errors enter `FAILED` immediately. |
-| Retry exhaustion | Per-step or run-wide budget consumed | No further attempt or nested retry | Record exhaustion and final state; never loop. |
-| Unsafe/malicious page content | Prompt injection, unsafe links, malformed content | Treat as data; ignore instructions; validate content; do not follow embedded links automatically | Record a limitation if blocked content affects evidence. |
-| Report validation failure | Missing field, invalid status/time, dangling evidence ID | One bounded repair using validated evidence ledger | If still invalid, emit minimal valid failure report or explicit process error; never emit invalid success. |
-| Injected failure | Demo option names allowlisted tool and failure mode | Inject once at adapter boundary and route through normal recovery | Include injection/recovery in events/report; disabled unless explicitly selected. |
+## Classification
 
-## Global recovery rules
+| Class | Categories | Policy |
+|---|---|---|
+| Retryable | Timeout, temporary HTTP 5xx/rate limit, transient provider error, explicitly retryable malformed response | Retry the same validated call, at most twice per logical step, if the per-run limit allows. |
+| Non-retryable | Invalid arguments, unknown tool, invalid plan, unsafe URL/security violation, authentication/configuration failure, deterministic calculator error | Do not retry. Use no fallback unless the failure is separately classified as an eligible semantic source issue. Preserve the failure. |
+| Recoverable semantic | Empty/insufficient search result, unavailable source, page-specific not-found/unsupported content | Use a validated fallback if declared; otherwise request the one permitted validated plan revision when available; otherwise fail the step. |
+| Terminal | Retry budget exhausted, invalid plan after replanning, run dispatch budget exhausted, unrecoverable configuration/state invariant | Preserve the cause and stop the run when no trustworthy execution can continue. Failed steps may leave the run in `SYNTHESIZING` so a report can return `PARTIAL` with a limitation. |
 
-- Maximum 2 total attempts per tool step, including initial attempt; 20 tool invocations per run including retries.
-- Maximum 2 attempts for each model operation (one retry). A malformed planner response may be corrected once before a validated plan exists; this does not change a validated plan revision. Maximum plan length is 8; execution dispatch ceiling is 20 calls total, including retries/fallbacks; at most one validated-plan revision is allowed per run.
-- Retry only timeouts, transient 5xx, or provider-declared temporary throttles; respect retry timing only when it fits the budget.
-- The current engine implements only the single bounded retry above and deterministic failed-step/dependency handling. Fallback selection, runtime replanning, and injected failures remain deferred per D-030.
-- Never retry invalid input, unsafe destinations, permanent not-found/authorization errors, or deterministic calculator errors without a validated repair.
-- Every recovery action is an explicit transition from `RECOVERING`; every failure/retry is a structured event.
-- Preserve valid evidence; mark partial work honestly. Never fill gaps with unsupported model-generated claims.
+## Expected failures
+
+| Failure | Detection | Recovery and result |
+|---|---|---|
+| Tool timeout | Adapter deadline or injected timeout | Retry up to two times; after exhaustion record `RETRY_EXHAUSTED`, mark step failed and skip dependents. |
+| Invalid tool response | Pydantic/result provenance/output-schema validation | Reject it; retry only when the failure is explicitly classified as transient. Never treat malformed data as evidence. |
+| Malformed planner output | Invalid JSON/schema or invalid plan graph/tool arguments | Planner’s separately bounded model repair may run before validation. Invalid plan after the single runtime replan is terminal `FAILED`. |
+| Empty search results | Valid search response with zero results | Use prevalidated fallback query, then one validated replan when available; otherwise retain a source-gap limitation. |
+| URL fetch failure | Timeout, HTTP status, unsafe redirect or unsupported content | Retry transient timeout/5xx; a safe alternate URL can be used only if declared and validated. Security failures are never retried or bypassed. |
+| Calculator failure | Restricted expression/operation validation | Permanent for the same arguments; preserve failure and report the unavailable calculation. |
+| LLM/API failure | Provider timeout/status/invalid response | Retry transient failures within the separate model-operation cap; authentication/configuration errors are terminal. Never log API keys. |
+| Insufficient evidence | Evidence checks cannot verify or corroborate a claim | Search/fetch only within the plan, fallback and single replan limits; omit unsupported claims and explain the gap. |
+| Execution step failure | Tool failure or dispatch/result validation failure | Route through `FailureHandler`, preserve step status and failure, skip dependent steps, and continue independent work. |
+| Retry exhaustion | Two retries or global dispatch ceiling consumed | No further tool call. Mark the logical step failed and state the exhausted limit explicitly. |
+| Invalid replan | Replanner returns malformed/unknown-tool/invalid-dependency plan | Revalidate through `PlanValidator`; a rejected revision makes lifecycle `FAILED`. |
+| Configuration/security failure | Missing required setting, unsafe URL, invalid tool name/arguments | Do not retry or execute; return controlled terminal/step failure. |
+
+## Hard bounds and action order
+
+- `MAX_RETRIES_PER_STEP = 2`; `MAX_TOOL_ATTEMPTS = 3` including the first call.
+- `MAX_EXECUTION_STEPS = 20` tool calls per run. Fallback and revised replacement calls consume the same logical-step attempt budget.
+- At most one validated plan revision per run; replan does not reset call/retry limits. Model output repair has its separate model-attempt limit and occurs before a plan is validated.
+- One deterministic action is selected per failure: retry eligible transient errors; otherwise use an eligible prevalidated fallback; otherwise replan recoverable semantic/source failures if allowed; otherwise mark failed or enter terminal `FAILED` for invalid replan/configuration.
+- Retry identical arguments. Never retry invalid arguments, unknown tools, invalid plans, security violations, authentication errors, or deterministic calculator failures.
+
+## Demonstration injection
+
+Failure injection is disabled by default and configured with:
+
+```text
+AGENT_INJECT_FAILURE=true
+AGENT_FAILURE_MODE=tool_timeout
+AGENT_FAILURE_TOOL=calculator
+```
+
+Supported modes are `tool_timeout` and `malformed_tool_response`; the optional tool is one of `web_search`, `url_fetch`, or `calculator`. The injector fires once on the first matching call, emits `FAILURE_INJECTED`, returns a normal failed `ToolResult`, and lets the same handler choose recovery. It never fabricates a successful result. Setting mode to `malformed_tool_response` creates a retryable `INVALID_RESPONSE` failure without exposing malformed bytes.
+
+Expected event order for a recovered injected timeout:
+
+```text
+STEP_STARTED
+TOOL_CALL_STARTED
+FAILURE_INJECTED
+TOOL_CALL_FAILED
+RECOVERY_STARTED
+RETRY_ATTEMPTED
+RECOVERY_APPLIED
+TOOL_CALL_STARTED
+TOOL_CALL_SUCCEEDED
+STEP_COMPLETED
+```
+
+If recovery fails, the final report must use `PARTIAL` or `FAILED` as appropriate, keep the failed step/failure, and state the cause and exhausted action in `limitations`. It must never claim the requested work succeeded.

@@ -5,6 +5,7 @@
 - Store `GROQ_API_KEY` and `BRAVE_SEARCH_API_KEY` in environment variables or an ignored local environment file.
 - `GROQ_MODEL` is a non-secret environment setting; never hard-code a model identifier.
 - `BRAVE_SEARCH_API_KEY` is required only for live Brave searches and is read from environment-backed settings.
+- Demo injection uses only `AGENT_INJECT_FAILURE`, `AGENT_FAILURE_MODE`, and optional `AGENT_FAILURE_TOOL`; these non-secret settings default to disabled and are validated against fixed enums. Never log raw provider/tool payloads when simulating malformed output.
 - Commit only placeholder `.env.example`; exclude real `.env` files and never place credentials in shell history intentionally.
 - Never put keys in prompts, tool arguments, events, exception messages, screenshots, or sample transcripts.
 - Redact authorization headers and known secret values from logs. Missing-key errors must not echo values.

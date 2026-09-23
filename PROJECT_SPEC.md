@@ -22,7 +22,7 @@ Build a Python CLI agent that accepts a natural-language research goal, creates 
 - Python 3.11+ CLI. This specification defines behavior, not application code.
 - Tool, model, and report boundaries are validated and independently mockable.
 - Use strict Pydantic v2 models for validated structured boundaries, as specified in `ARCHITECTURE.md`; forbid unknown fields and validate cross-field invariants.
-- Hard limits: 8 plan steps; 20 total tool/execution dispatches per run including retries; 2 attempts per tool step total (one retry); 2 attempts per model operation (one retry); at most one validated-plan revision per run. A malformed structured response may use the model operation retry before a valid plan exists. These limits are centralized in `research_agent.limits`.
+- Hard limits: 8 plan steps; 20 total tool dispatches per run; 3 calls per logical tool step (initial call plus at most 2 retries, with every fallback/replanned replacement also consuming that same budget); 2 attempts per model operation (one retry); at most one validated-plan revision per run. A malformed structured response may use the model-operation retry before a valid plan exists. Limits are centralized in `research_agent.limits`.
 - Apply finite connect/read timeouts and configured response, page, search-result, and token limits. Current tool bounds: search 8s/1 MB/10 results; fetch 10s/1 MB/20,000 extracted chars/five redirects; calculator 256 expression characters/64 AST nodes. LLM bounds are recorded in `DECISIONS.md`.
 - Offline tests require no API keys, paid inference, or live network access.
 - Reports cite evidence, identify uncertainty, distinguish verified facts from interpretation, and disclose skipped work.
@@ -33,7 +33,7 @@ Build a Python CLI agent that accepts a natural-language research goal, creates 
 ### Input
 
 - Required: one natural-language goal as the CLI positional argument.
-- Optional: `--simulate-failure TOOL:MODE` for demonstration/testing only; tool and failure names must be allowlisted and injection is disabled by default.
+- Failure demonstration configuration is environment-only and disabled by default: `AGENT_INJECT_FAILURE=true`, `AGENT_FAILURE_MODE=tool_timeout|malformed_tool_response`, and optional `AGENT_FAILURE_TOOL=web_search|url_fetch|calculator`. One failure is injected per run and routed through ordinary recovery.
 - Capture `run_started_at` once in UTC and use it for all relative date windows.
 - Missing goal is a CLI usage error and causes no model/tool calls.
 
@@ -82,7 +82,7 @@ Tools accept validated JSON and return typed success or typed failure. They do n
 
 ## Observable execution events
 
-Emit ordered structured events: `run_started`, `plan_created`, `plan_rejected`/`plan_validated`, `step_started`, `tool_call_started`, `tool_call_succeeded`/`tool_call_failed`, `retry_scheduled`, `recovery_applied`, `evidence_recorded`, `step_completed`/`step_skipped`, `report_validated`, `run_completed`.
+Emit ordered structured events: `run_started`, `plan_created`, `plan_rejected`/`plan_validated`, `step_started`, `tool_call_started`, `tool_call_succeeded`/`tool_call_failed`, `failure_injected`, `recovery_started`, `retry_attempted`, `recovery_applied`, `evidence_recorded`, `step_completed`/`step_skipped`, `report_validated`, `run_completed`.
 
 Each event includes `run_id`, UTC timestamp, event type, optional `step_id`/`tool_name`, attempt number, outcome, duration when available, and sanitized summary. Never log auth headers, API keys, full prompts, or unbounded page content.
 
@@ -90,7 +90,8 @@ Each event includes `run_id`, UTC timestamp, event type, optional `step_id`/`too
 
 - Route every tool/execution failure through the state-machine recovery handler; no direct adapter retry loops.
 - Allow at most 2 total attempts per tool step and 20 total tool invocations per run including retries.
-- Retry only classified transient failures; respect provider retry timing only if it fits the run budget.
+- Retry classified transient failures only, at most twice per logical step; respect provider retry timing only if it fits the run budget.
+- Recovery order is deterministic: bounded transient retry; validated fallback for eligible semantic failures; at most one validated replan for remaining recoverable search/evidence failures; otherwise preserve the failure and continue independent work or terminate.
 - Permit at most one validated-plan revision after the initial plan is accepted; a malformed structured model response may separately use its one bounded model-operation retry before a Plan exists. Every revised plan re-enters validation before execution.
 - On unrecoverable failure, mark the step and dependents accurately, preserve valid evidence, produce `partial` or `failed`, and explain the limitation.
 - See `FAILURE_MODES.md` for the full catalog.

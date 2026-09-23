@@ -5,10 +5,14 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID
+from collections.abc import Callable
 
 from pydantic import BaseModel, ValidationError
 
 from research_agent.event_logger import EventLogger
+from research_agent.config import AgentSettings
+from research_agent.failure_handler import FailureHandler
+from research_agent.failure_injector import FailureInjector
 from research_agent.interfaces import ToolRegistry
 from research_agent.limits import MAX_EXECUTION_STEPS, MAX_TOOL_ATTEMPTS
 from research_agent.models import (
@@ -18,6 +22,8 @@ from research_agent.models import (
     FailureCategory,
     FailureOrigin,
     Plan,
+    PlanStep,
+    Goal,
     RecoveryAction,
     RecoveryKind,
     RecoveryReason,
@@ -33,6 +39,7 @@ from research_agent.models import (
     utc_now,
 )
 from research_agent.state import AgentState
+from research_agent.plan_validator import PlanValidator
 from research_agent.tools.base import failed_tool_result
 
 
@@ -44,9 +51,19 @@ class ExecutionEngine:
         registry: ToolRegistry,
         *,
         event_logger: EventLogger | None = None,
+        failure_handler: FailureHandler | None = None,
+        settings: AgentSettings | None = None,
+        replanner: Callable[[Goal, AgentState, Failure], Plan | Failure] | None = None,
+        plan_validator: PlanValidator | None = None,
     ) -> None:
         self._registry = registry
         self._event_logger = event_logger or EventLogger()
+        self._replanner = replanner
+        self._plan_validator = plan_validator or PlanValidator()
+        self._failure_handler = failure_handler or FailureHandler(
+            replanning_enabled=replanner is not None
+        )
+        self._failure_injector = FailureInjector(settings or AgentSettings.from_env())
 
     def execute(self, validated_plan: ValidatedPlan, state: AgentState) -> AgentState:
         """Run steps in stable dependency order and return ready for synthesis."""
@@ -80,7 +97,15 @@ class ExecutionEngine:
                     step.id: StepStatus.FAILED for step in plan.steps
                 }
                 state.retry_counts = {step.id: 0 for step in plan.steps}
-            self._fail_run(state, f"Plan execution precondition failed ({type(error).__name__}).")
+            self._fail_run(
+                state,
+                f"Plan execution precondition failed ({type(error).__name__}).",
+                category=(
+                    FailureCategory.INVALID_ARGUMENT
+                    if isinstance(error, LookupError)
+                    else FailureCategory.STATE_INVARIANT
+                ),
+            )
             return state
 
         assert plan is not None
@@ -137,7 +162,9 @@ class ExecutionEngine:
                 step_id=step.id,
                 tool_name=step.tool_name,
             )
-            self._execute_step(state, step.id, step.tool_name, step.input)
+            self._execute_step(state, step)
+            if state.lifecycle_state == RunState.FAILED:
+                return state
 
         self._transition(
             state,
@@ -146,15 +173,16 @@ class ExecutionEngine:
         )
         return state
 
-    def _execute_step(
-        self,
-        state: AgentState,
-        step_id: str,
-        tool_name: ToolName,
-        arguments: BaseModel,
-    ) -> None:
-        attempt = 1
-        while attempt <= MAX_TOOL_ATTEMPTS:
+    def _execute_step(self, state: AgentState, step: PlanStep) -> None:
+        step_id = step.id
+        tool_name = step.tool_name
+        arguments: BaseModel = step.input
+        next_kind = ToolCallKind.PRIMARY
+        while True:
+            logical_step_ids = {step_id}
+            if step.recovery_of_step_id is not None:
+                logical_step_ids.add(step.recovery_of_step_id)
+            attempt = sum(call.step_id in logical_step_ids for call in state.tool_calls) + 1
             if len(state.tool_calls) >= MAX_EXECUTION_STEPS:
                 failure = self._make_failure(
                     state,
@@ -163,9 +191,7 @@ class ExecutionEngine:
                     Retryability.NON_RETRYABLE,
                     "Run-wide tool-call limit was reached.",
                 )
-                self._record_permanent_failure(
-                    state, step_id, tool_name, failure, attempt
-                )
+                self._handle_failure(state, step, failure, attempt)
                 return
 
             try:
@@ -183,9 +209,7 @@ class ExecutionEngine:
                     Retryability.NON_RETRYABLE,
                     f"Tool arguments or registry lookup failed ({type(error).__name__}).",
                 )
-                self._record_permanent_failure(
-                    state, step_id, tool_name, failure, attempt
-                )
+                self._handle_failure(state, step, failure, attempt)
                 return
 
             call = ToolCall(
@@ -194,7 +218,7 @@ class ExecutionEngine:
                 tool_name=tool_name,
                 arguments=validated_arguments,
                 attempt=attempt,
-                kind=ToolCallKind.PRIMARY if attempt == 1 else ToolCallKind.RETRY,
+                kind=next_kind,
                 created_at=utc_now(),
             )
             state.tool_calls.append(call)
@@ -209,7 +233,21 @@ class ExecutionEngine:
                 attempt=attempt,
             )
 
-            result = self._dispatch_and_validate(call, tool)
+            injected_result = self._failure_injector.maybe_fail(call)
+            if injected_result is not None:
+                self._emit(
+                    state,
+                    EventType.FAILURE_INJECTED,
+                    EventOutcome.FAILED,
+                    f"Demonstration failure injected ({injected_result.failure.category.value}).",
+                    step_id=step_id,
+                    call_id=call.call_id,
+                    tool_name=tool_name,
+                    attempt=attempt,
+                )
+                result = injected_result
+            else:
+                result = self._dispatch_and_validate(call, tool)
             state.tool_results.append(result)
             if result.status == ToolResultStatus.SUCCEEDED:
                 state.step_statuses[step_id] = StepStatus.SUCCEEDED
@@ -256,54 +294,185 @@ class ExecutionEngine:
                 attempt=attempt,
             )
 
-            can_retry = (
-                failure.retryability == Retryability.RETRYABLE
-                and attempt < MAX_TOOL_ATTEMPTS
-                and len(state.tool_calls) < MAX_EXECUTION_STEPS
+            action = self._handle_failure(state, step, failure, attempt)
+            if action is None or action.kind not in {RecoveryKind.RETRY, RecoveryKind.FALLBACK}:
+                return
+            assert action.replacement_call is not None
+            arguments = action.replacement_call.arguments
+            tool_name = action.replacement_call.tool_name
+            next_kind = action.replacement_call.kind
+
+    def _handle_failure(
+        self,
+        state: AgentState,
+        step: PlanStep,
+        failure: Failure,
+        attempt: int,
+    ) -> RecoveryAction | None:
+        if failure.call_id is None:
+            self._emit(
+                state,
+                EventType.TOOL_CALL_FAILED,
+                EventOutcome.FAILED,
+                f"Step failed before tool dispatch ({failure.category.value}).",
+                step_id=step.id,
+                tool_name=step.tool_name,
+                attempt=attempt if attempt <= MAX_TOOL_ATTEMPTS else None,
             )
-            if can_retry:
-                self._transition(state, RunState.RECOVERY)
-                state.retry_counts[step_id] = attempt
-                state.recovery_history.append(
-                    RecoveryAction(
-                        failure_id=failure.failure_id,
-                        kind=RecoveryKind.RETRY,
-                        target_step_id=step_id,
-                        reason_code=RecoveryReason.TRANSIENT,
-                        selected_at=utc_now(),
+        if state.lifecycle_state == RunState.EXECUTING:
+            self._transition(state, RunState.RECOVERY)
+        self._emit(
+            state,
+            EventType.RECOVERY_STARTED,
+            EventOutcome.STARTED,
+            f"Selecting bounded recovery for {failure.category.value}.",
+            step_id=step.id,
+            tool_name=step.tool_name,
+            attempt=attempt,
+        )
+        action = self._failure_handler.recover(failure, state, step)
+        state.recovery_history.append(action)
+        if action.kind == RecoveryKind.RETRY:
+            state.retry_counts[step.id] = state.retry_counts.get(step.id, 0) + 1
+            self._emit(
+                state,
+                EventType.RETRY_ATTEMPTED,
+                EventOutcome.SCHEDULED,
+                "A bounded retry was selected.",
+                step_id=step.id,
+                tool_name=action.replacement_call.tool_name if action.replacement_call else step.tool_name,
+                attempt=attempt + 1,
+            )
+        if action.kind == RecoveryKind.REPLAN:
+            if self._replanner is None:
+                self._fail_run(state, "Recovery selected replanning without a configured planner.")
+                return None
+            try:
+                proposal = self._replanner(state.goal, state, failure)
+                if isinstance(proposal, Failure):
+                    validated = proposal
+                else:
+                    validated = self._plan_validator.validate(
+                        state.goal, proposal, state, self._registry
                     )
+            except Exception as error:
+                validated = Failure(
+                    category=FailureCategory.INVALID_ARGUMENT,
+                    origin=FailureOrigin.VALIDATOR,
+                    retryability=Retryability.NON_RETRYABLE,
+                    run_id=state.run_id,
+                    step_id=step.id,
+                    message=f"Replanned proposal failed ({type(error).__name__}).",
+                    occurred_at=utc_now(),
                 )
+            if isinstance(validated, Failure):
+                state.failures.append(validated)
+                state.step_statuses[step.id] = StepStatus.FAILED
+                state.step_failures[step.id] = failure
                 self._emit(
                     state,
-                    EventType.RETRY_SCHEDULED,
-                    EventOutcome.SCHEDULED,
-                    "Transient failure will be retried once within the attempt limit.",
-                    step_id=step_id,
-                    tool_name=tool_name,
-                    attempt=attempt + 1,
+                    EventType.PLAN_REJECTED,
+                    EventOutcome.REJECTED,
+                    "Replanned proposal failed validation.",
+                    step_id=step.id,
+                    tool_name=step.tool_name,
                 )
                 self._emit(
                     state,
                     EventType.RECOVERY_APPLIED,
-                    EventOutcome.RECOVERED,
-                    "Scheduled one bounded retry.",
-                    step_id=step_id,
-                    tool_name=tool_name,
-                    attempt=attempt + 1,
+                    EventOutcome.FAILED,
+                    "Recovery stopped because the revised plan was invalid.",
+                    step_id=step.id,
+                    tool_name=step.tool_name,
                 )
-                self._transition(state, RunState.EXECUTING)
-                attempt += 1
-                continue
-
+                self._fail_run(
+                    state,
+                    "Invalid plan after the single permitted replan.",
+                    category=FailureCategory.INVALID_ARGUMENT,
+                )
+                return None
+            revised = validated.plan
+            replacement_steps = [
+                candidate
+                for candidate in revised.steps
+                if candidate.recovery_of_step_id == step.id
+            ]
+            if len(replacement_steps) != 1 or len(revised.steps) != 1:
+                self._emit(
+                    state,
+                    EventType.PLAN_REJECTED,
+                    EventOutcome.REJECTED,
+                    "Replanned proposal did not contain exactly one replacement step.",
+                    step_id=step.id,
+                    tool_name=step.tool_name,
+                )
+                self._emit(
+                    state,
+                    EventType.RECOVERY_APPLIED,
+                    EventOutcome.FAILED,
+                    "Recovery stopped because the revised work was ambiguous.",
+                    step_id=step.id,
+                    tool_name=step.tool_name,
+                )
+                self._fail_run(
+                    state,
+                    "Replanned plan must contain one replacement for the failed step.",
+                    category=FailureCategory.INVALID_ARGUMENT,
+                )
+                return None
+            replacement = replacement_steps[0]
+            state.active_plan = revised
+            state.step_statuses.setdefault(replacement.id, StepStatus.PENDING)
+            state.retry_counts.setdefault(replacement.id, state.retry_counts.get(step.id, 0))
+            self._emit(
+                state,
+                EventType.RECOVERY_APPLIED,
+                EventOutcome.RECOVERED,
+                "Validated one-step plan revision; executing its replacement step.",
+                step_id=replacement.id,
+                tool_name=replacement.tool_name,
+            )
+            self._transition(state, RunState.EXECUTING)
+            self._execute_step(state, replacement)
+            if state.step_statuses.get(replacement.id) == StepStatus.SUCCEEDED:
+                state.step_statuses[step.id] = StepStatus.SUCCEEDED
+                state.step_failures.pop(step.id, None)
+            else:
+                state.step_statuses[step.id] = StepStatus.FAILED
+                state.step_failures[step.id] = failure
+            return None
+        self._emit(
+            state,
+            EventType.RECOVERY_APPLIED,
+            EventOutcome.RECOVERED if action.kind in {RecoveryKind.RETRY, RecoveryKind.FALLBACK} else EventOutcome.FAILED,
+            f"Recovery decision: {action.kind.value} ({action.reason_code.value}).",
+            step_id=step.id,
+            tool_name=action.replacement_call.tool_name if action.replacement_call else step.tool_name,
+            attempt=attempt + 1 if action.replacement_call else attempt,
+        )
+        if action.kind in {RecoveryKind.MARK_FAILED, RecoveryKind.REPLAN}:
+            if action.reason_code == RecoveryReason.BUDGET_EXHAUSTED:
+                exhausted = failure.model_copy(
+                    update={
+                        "category": FailureCategory.RETRY_EXHAUSTED,
+                        "origin": FailureOrigin.EXECUTOR,
+                        "retryability": Retryability.NON_RETRYABLE,
+                        "message": (
+                            f"Retry budget exhausted after {attempt} tool attempts; "
+                            f"last failure: {failure.message}"
+                        ),
+                    }
+                )
+                failure = exhausted
+                state.failures.append(exhausted)
             self._record_permanent_failure(
                 state,
-                step_id,
-                tool_name,
+                step.id,
                 failure,
-                attempt,
-                failure_event_recorded=True,
             )
-            return
+            return None
+        self._transition(state, RunState.EXECUTING)
+        return action
 
     def _dispatch_and_validate(self, call: ToolCall, tool: Any) -> ToolResult:
         try:
@@ -362,52 +531,16 @@ class ExecutionEngine:
         self,
         state: AgentState,
         step_id: str,
-        tool_name: ToolName,
         failure: Failure,
-        attempt: int,
-        *,
-        failure_event_recorded: bool = False,
     ) -> None:
         state.step_statuses[step_id] = StepStatus.FAILED
         state.step_failures[step_id] = failure
         if failure not in state.failures:
             state.failures.append(failure)
-        if not failure_event_recorded:
-            self._emit(
-                state,
-                EventType.TOOL_CALL_FAILED,
-                EventOutcome.FAILED,
-                f"Step failed before or during dispatch ({failure.category.value}).",
-                step_id=step_id,
-                tool_name=tool_name,
-                attempt=attempt if attempt <= MAX_TOOL_ATTEMPTS else None,
-            )
-        self._transition(state, RunState.RECOVERY)
-        state.recovery_history.append(
-            RecoveryAction(
-                failure_id=failure.failure_id,
-                kind=RecoveryKind.MARK_FAILED,
-                target_step_id=step_id,
-                reason_code=(
-                    RecoveryReason.BUDGET_EXHAUSTED
-                    if failure.category == FailureCategory.RETRY_EXHAUSTED
-                    or attempt >= MAX_TOOL_ATTEMPTS
-                    or len(state.tool_calls) >= MAX_EXECUTION_STEPS
-                    else RecoveryReason.PERMANENT_ERROR
-                ),
-                selected_at=utc_now(),
-            )
-        )
-        self._emit(
-            state,
-            EventType.RECOVERY_APPLIED,
-            EventOutcome.FAILED,
-            "Step marked failed; dependent steps will be skipped.",
-            step_id=step_id,
-            tool_name=tool_name,
-            attempt=attempt if attempt <= MAX_TOOL_ATTEMPTS else None,
-        )
-        self._transition(state, RunState.EXECUTING)
+        if state.lifecycle_state == RunState.EXECUTING:
+            self._transition(state, RunState.RECOVERY)
+        if state.lifecycle_state == RunState.RECOVERY:
+            self._transition(state, RunState.EXECUTING)
 
     def _make_failure(
         self,
@@ -484,9 +617,15 @@ class ExecutionEngine:
             step_id=step_id,
         )
 
-    def _fail_run(self, state: AgentState, message: str) -> None:
+    def _fail_run(
+        self,
+        state: AgentState,
+        message: str,
+        *,
+        category: FailureCategory = FailureCategory.STATE_INVARIANT,
+    ) -> None:
         failure = Failure(
-            category=FailureCategory.STATE_INVARIANT,
+            category=category,
             origin=FailureOrigin.EXECUTOR,
             retryability=Retryability.NON_RETRYABLE,
             run_id=state.run_id,

@@ -21,6 +21,7 @@ Build a Python CLI agent that accepts a natural-language research goal, creates 
 
 - Python 3.11+ CLI. This specification defines behavior, not application code.
 - Tool, model, and report boundaries are validated and independently mockable.
+- Use strict Pydantic v2 models for validated structured boundaries, as specified in `ARCHITECTURE.md`; forbid unknown fields and validate cross-field invariants.
 - Hard limits: 8 plan steps; 20 total tool invocations per run including retries; 2 attempts per tool step total; 2 attempts per model operation; at most one plan repair/replan per run.
 - Apply finite connect/read timeouts and configured response, page, search-result, and token limits. Exact byte/time/token values are an implementation gate recorded in `DECISIONS.md` before adapters are coded.
 - Offline tests require no API keys, paid inference, or live network access.

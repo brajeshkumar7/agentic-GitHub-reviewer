@@ -1,37 +1,35 @@
 # Project Progress
 
-Initial baseline for the Autonomous Research Intelligence Agent. All implementation phases are intentionally incomplete; update only as phases pass their tests and acceptance criteria.
-
-## Phase 1 architecture contract
-
-- [x] Read all nine control documents and define component responsibilities/interfaces, structured models, lifecycle, bounded recovery policy, and model/tool boundaries in `ARCHITECTURE.md`.
-- [x] Record the architecture choices and remaining provider/resource/source-reliability decisions in `DECISIONS.md`.
-- [ ] Phase 1 application implementation and tests remain not started. This architecture-only work added no code, installed no dependencies, and made no external API calls.
+All phases are tracked here. A phase is complete only after its acceptance criteria and tests/reviews are evidenced.
 
 ## Phases
 
-- [ ] **Phase 0 — Project scaffold and configuration:** Python CLI shell, setup/configuration, safe output conventions.
-- [ ] **Phase 1 — Goal, plan schema, and state-machine contracts:** natural-language input, structured planner output, validation, visible pre-execution plan.
-- [ ] **Phase 2 — Tool adapters and result validation:** web search, HTTPS page fetch, calculator, typed outcomes and safety bounds.
-- [ ] **Phase 3 — Executor, event trace, and bounded recovery:** state machine, dependency order, retries, failure injection.
-- [ ] **Phase 4 — Evidence ledger, ranking, and report:** source verification, date/relevance ranking, validated JSON research brief.
-- [ ] **Phase 5 — End-to-end evaluation and assignment materials:** synthetic tests, README, architecture diagram, 2–3 transcripts, one-page write-up.
-- [ ] **Phase 6 — Final audit:** acceptance, security, reproducibility, and documentation review.
+- [x] **Phase 0 — Project control documents:** created and reviewed the nine engineering-control documents.
+- [x] **Phase 1 — Technical architecture contract:** finalized the requested components, schemas, lifecycle, recovery, trace, and diagrams in `ARCHITECTURE.md`; recorded decisions in `DECISIONS.md`.
+- [x] **Phase 2 — Repository scaffold, configuration, schemas, and interfaces:** package skeleton, settings, models, protocols, placeholder CLI, and offline tests completed.
+- [ ] **Phase 3 — Planner and plan validation:** structured plan generation and validation.
+- [ ] **Phase 4 — Tool adapters and result validation:** web search, HTTPS fetch, calculator.
+- [ ] **Phase 5 — Execution engine, state, events, and recovery:** deterministic orchestration and bounded recovery.
+- [ ] **Phase 6 — Evidence and final report:** source verification and validated report generation.
+- [ ] **Phase 7 — End-to-end evaluation and assignment materials:** offline scenarios, README, transcripts, short write-up.
+- [ ] **Phase 8 — Final audit:** full acceptance, security, reproducibility, and documentation review.
 
-## Current gate
+## Current phase gate
 
-- Current phase: **Phase 0 — not started**.
-- No application code or dependencies have been added.
-- Before coding, resolve the open items in `DECISIONS.md`: concrete search provider/API, resource limits, and operational source-reliability classification. Groq remains selected from the user's earlier direction; model identifier stays environment-configured.
+- Current phase: **Phase 3 — Planner and plan validation**.
+- Scope excludes planner/executor/tool implementations and all external API calls.
+- Environment observed: Python 3.13, Pydantic 2.10.6, pytest 9.0.3 already available; no dependencies installed.
 
 ## Phase evidence log
 
 | Phase | Status | Test/acceptance evidence | Notes |
 |---|---|---|---|
-| 0 | Incomplete | — | — |
-| 1 | Incomplete | — | — |
-| 2 | Incomplete | — | — |
+| 0 | Complete | Control-document inventory/review | Documentation-only. |
+| 1 | Complete | Architecture and decision review | Documentation-only; no application tests. |
+| 2 | Complete | `pytest -p no:cacheprovider`: 11 passed; CLI `python -m research_agent --help` smoke-tested offline; `git diff --check` clean. | No dependencies installed; no live API calls. |
 | 3 | Incomplete | — | — |
-| 4 | Incomplete | — | — |
+| 4 | Incomplete | — | Search-provider/resource policy decisions remain open. |
 | 5 | Incomplete | — | — |
 | 6 | Incomplete | — | — |
+| 7 | Incomplete | — | — |
+| 8 | Incomplete | — | — |

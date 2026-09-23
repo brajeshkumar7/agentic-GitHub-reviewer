@@ -22,6 +22,11 @@ This log records accepted architecture and unresolved implementation choices. Ma
 | D-014 | Search snippets are discovery only; reported developments target two independent fetched sources and prefer primary-source corroboration. | Claims must be grounded in accessible source material; evidence gaps stay explicit. |
 | D-015 | Default relative time window is seven days from one UTC run-start timestamp. | Keeps “latest” stable and testable. |
 | D-016 | Synthetic fixtures and fake clients are the default test strategy; deterministic one-shot failure injection exercises normal recovery. | No keys, paid inference, or external API access are needed in standard evaluation. |
+| D-017 | Use a `src/research_agent/` package layout, PEP 621 `pyproject.toml` metadata, and a `research-agent` console script plus `python -m research_agent`. | Standard packaging keeps imports/install behavior explicit and provides both requested CLI entry paths. |
+| D-018 | Use the strict Pydantic v2 models approved in `ARCHITECTURE.md` for the Phase 2 schema module and configuration; reject extra fields and invalid cross-field combinations. | Meets the existing validated-boundary contract using the already selected focused validation library. |
+| D-019 | Use pytest as an optional development/test dependency; do not add a linter/formatter in this phase. | pytest is required for acceptance; no formatter is needed for this small scaffold and adding another tool is not justified yet. |
+| D-020 | Define architecture component modules as protocol-only interfaces in Phase 2; CLI reports that runtime agent behavior is not implemented. | Establishes module boundaries while keeping planner, executor, LLM calls, and tools out of this phase. |
+| D-021 | Keep configuration environment-only in Phase 2; `.env.example` is a blank template and no dotenv loader is added. Groq key/model must be configured together or both omitted for scaffold/offline use. | Avoids secret-bearing files and avoids another dependency; supports offline imports/tests without credentials. |
 
 ## Open decisions before tool-adapter implementation
 

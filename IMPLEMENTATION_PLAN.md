@@ -1,101 +1,129 @@
 # Sequential Implementation Plan
 
-Implement one phase at a time. Do not start a later phase until the current phase's tests and acceptance criteria pass and `PROGRESS.md` records the result.
+Implement one phase at a time. Do not start a later phase until the current phase's tests and acceptance criteria pass and `PROGRESS.md` records the evidence.
 
-## Phase 0 — Project scaffold and configuration
+## Phase 0 — Project control documents
 
-**Objective:** establish a runnable Python project shell and safe configuration boundary.
+**Objective:** establish the assignment scope, safety rules, and initial requirements.
 
-**Files/components affected:** `pyproject.toml`, package entry point, `.env.example`, `.gitignore`, `README.md`, test configuration.
+**Files/components affected:** `AGENTS.md`, `PROJECT_SPEC.md`, `IMPLEMENTATION_PLAN.md`, `PROGRESS.md`, `DECISIONS.md`, `FAILURE_MODES.md`, `EVALUATION.md`, `SECURITY.md`.
 
-**Implementation work:** create Python 3.11+ package/CLI shell; load environment config without committing secrets; establish output/event channels; document setup and placeholder invocation. No model/tool calls.
+**Implementation work:** document the agent goal, deliverables, controls, assumptions, and phased workflow.
 
-**Tests:** CLI help and missing-goal behavior; environment loading with/without optional keys; secret redaction/config validation.
+**Tests:** manual document inventory and cross-reference review; no executable tests for this documentation-only phase.
 
-**Acceptance criteria:** clean setup instructions; missing goal exits before external calls; no real key is tracked or logged.
+**Acceptance criteria:** all required control documents exist, are readable, and describe one consistent project direction.
 
-**DO NOT IMPLEMENT YET:** planner, tool adapters, state machine, research logic, failure injection, or report synthesis.
+**DO NOT IMPLEMENT YET:** any application package, API client, tool, planner, execution engine, or report behavior.
 
-## Phase 1 — Goal, plan schema, and state-machine contracts
+## Phase 1 — Technical architecture contract
 
-**Objective:** accept a goal and produce a validated visible plan without executing it.
+**Objective:** specify the component boundaries, schemas, lifecycle, trace, and deterministic recovery policy.
 
-**Files/components affected:** input/config modules, plan schema/types, planner interface and Groq adapter, plan validator, state/event definitions.
+**Files/components affected:** `ARCHITECTURE.md`, `DECISIONS.md`, with progress recorded in `PROGRESS.md`.
 
-**Implementation work:** capture one UTC run-start time; parse seven-day default window when omitted; request structured plan; validate step count, IDs, tool names, arguments, dependencies, cycles; emit plan before dispatch.
+**Implementation work:** define the fourteen components and interfaces; Mermaid component and sequence diagrams; Pydantic schema strategy; lifecycle and terminal states; model/application/tool boundaries; bounded recovery rules.
 
-**Tests:** valid goal/plan; empty goal; malformed planner JSON; unknown tool; invalid arguments; duplicate IDs; dependency cycle; date boundaries/default; mocked Groq failure.
+**Tests:** manual review that every component/schema/transition is specified and aligned with `PROJECT_SPEC.md`, `FAILURE_MODES.md`, and `SECURITY.md`.
 
-**Acceptance criteria:** only a valid plan reaches `READY`; invalid output is rejected or repaired once and revalidated; trace shows plan validation before tool calls.
+**Acceptance criteria:** architecture contract is reviewed and accepted; hidden reasoning stays out of the visible trace; no application behavior is implemented.
 
-**DO NOT IMPLEMENT YET:** live search, page fetching, calculator execution, evidence ranking, or report generation.
+**DO NOT IMPLEMENT YET:** Python modules, dependencies, live LLM calls, external tools, persistence, or UI.
 
-## Phase 2 — Tool adapters and result validation
+## Phase 2 — Repository scaffold, configuration, schemas, and interfaces (current phase)
 
-**Objective:** implement the three approved tools behind validated, mockable interfaces.
+**Objective:** create the installable Python package skeleton and testable contracts without implementing agent behavior.
 
-**Files/components affected:** search adapter/provider interface, HTTPS fetch adapter, calculator adapter, tool schemas, URL/content safety utilities, fake adapters.
+**Files/components affected:** `pyproject.toml`, `.gitignore`, `.env.example`, `src/research_agent/**`, and `tests/**`.
 
-**Implementation work:** normalize search results; fetch validated public HTTPS pages; validate redirects/content type/size; extract bounded text/metadata; implement allowlisted decimal arithmetic; return typed outcomes without adapter-owned retries.
+**Implementation work:** use a `src/` package layout; add environment-backed validated settings; define typed Pydantic models for the agreed schemas; create protocol-only component/tool/LLM interfaces in modules matching `ARCHITECTURE.md`; add an argparse CLI placeholder and `python -m` entrypoint; add tests for imports, model construction/validation, CLI startup/help, and settings validation.
 
-**Tests:** valid/empty/malformed search; fetch success, timeout, redirect denial, unsupported content, oversized page; calculator operations and invalid/divide-by-zero input; fake rate limit.
+**Tests:** `pytest` offline with no credentials or network. Check all component modules import, representative valid and invalid model instances, CLI help/placeholder startup, optional credential-pair validation, and secret-safe settings representation.
 
-**Acceptance criteria:** inputs/results meet schemas; snippets remain unverified; URL protections and configured limits apply; adapters do not dispatch tools.
+**Acceptance criteria:** package imports from `src/`; editable/build metadata is standard `pyproject.toml`; console/module entrypoints start; configuration rejects incomplete credentials without exposing secrets; architecture component module boundaries exist; schemas validate; tests pass offline.
 
-**DO NOT IMPLEMENT YET:** autonomous multi-step execution, LLM evidence synthesis, broad source ranking, or sample transcripts.
+**DO NOT IMPLEMENT YET:** planner logic, plan validation logic, real LLM calls, tool adapters or tool logic, execution/recovery logic, evidence processing/report synthesis, UI, database, external API calls, or dependency installation beyond the already available environment.
 
-## Phase 3 — Executor, event trace, and bounded recovery
+## Phase 3 — Planner and plan validation
 
-**Objective:** execute validated plans through the state machine and recover safely.
+**Objective:** turn a goal into a validated executable proposal.
 
-**Files/components affected:** orchestrator/state machine, dependency scheduler, recovery handler, event recorder, failure-injection harness, `FAILURE_MODES.md`.
+**Files/components affected:** planner, LLM client implementation, plan validator implementation, prompt/schema handling, tests, `FAILURE_MODES.md` as needed.
 
-**Implementation work:** enforce legal transitions/dependency order; route all failures through recovery; cap each tool step at two total attempts, tool calls at 20/run, model operations at two attempts, plan repair at one/run; support one deterministic simulated failure.
+**Implementation work:** implement structured plan generation and strict validation under the fixed tool registry, preserving the approved schemas and revision budgets.
 
-**Tests:** legal/illegal transitions; dependencies; timeout then success; exhaustion; malformed response; one plan repair; injected failure via normal recovery; event order/redaction.
+**Tests:** fake LLM responses for valid/malformed plans, unknown tools, invalid arguments, duplicate IDs, dependency cycles, and revision exhaustion.
 
-**Acceptance criteria:** no adapter bypasses orchestration; every failure is observable; budgets cannot be exceeded; recovery resumes only through allowed transitions.
+**Acceptance criteria:** no unvalidated plan reaches execution; one approved plan revision maximum is enforced; tests remain offline by default.
 
-**DO NOT IMPLEMENT YET:** topic ranking, final brief, or source-verification claims.
+**DO NOT IMPLEMENT YET:** live search/fetch/calculator behavior, execution scheduling, retries, evidence ranking, or final report synthesis.
 
-## Phase 4 — Evidence ledger, ranking, and report
+## Phase 4 — Tool adapters and result validation
 
-**Objective:** turn fetched source material into a cited, bounded research result.
+**Objective:** implement the three approved tools behind the Phase 2 interfaces.
 
-**Files/components affected:** evidence ledger/models, date/source validator, ranker, Groq synthesis interface/prompt, report schema/renderer/validator.
+**Files/components affected:** web-search provider adapter, HTTPS fetch adapter, calculator implementation, registry implementation, URL/content safety utilities, fake adapters.
 
-**Implementation work:** store provenance/retrieval dates; enforce time window and two-independent-source target; select up to three developments by relevance, recency, evidence quality, corroboration; validate JSON and set status accurately.
+**Implementation work:** first resolve the search provider and resource/source-policy decisions in `DECISIONS.md`; implement bounded typed results and safety checks without adapter-owned retries.
 
-**Tests:** in/out-of-window dates; missing dates; duplicate/related sources; insufficient support; citation mismatch; <3 verified results; malformed report; status/schema checks.
+**Tests:** mocks for success, empty/malformed search, fetch timeout/redirect/content/size rejection, calculator arithmetic and errors, and provider throttling.
 
-**Acceptance criteria:** every claim links to fetched evidence; unsupported claims are removed or marked unverified; all references validate; evidence insufficiency is disclosed.
+**Acceptance criteria:** all tool arguments/results validate; snippets remain discovery-only; URL/security and resource limits are enforced; adapters cannot dispatch other tools.
 
-**DO NOT IMPLEMENT YET:** additional tools, persistent history, web UI, or scheduled runs.
+**DO NOT IMPLEMENT YET:** multi-step execution, recovery orchestration, evidence ranking, or LLM report synthesis.
 
-## Phase 5 — End-to-end evaluation and assignment materials
+## Phase 5 — Execution engine, state, events, and recovery
 
-**Objective:** demonstrate requirements with offline evaluation and reproducible examples.
+**Objective:** execute validated plans in order and recover through the declared state machine.
 
-**Files/components affected:** tests/fixtures, `EVALUATION.md`, `ARCHITECTURE.md`, `README.md`, sample transcripts, one-page design write-up.
+**Files/components affected:** execution engine, AgentState transitions, failure handler, event logger, failure-injection harness, tests.
 
-**Implementation work:** create synthetic search/page data and mock clients; test full CLI offline; capture two or three runs including normal and recovery; document assumptions, limits, setup, operation.
+**Implementation work:** enforce legal transitions, dependency order, hard budgets, retry/fallback/replan policy, and deterministic one-shot failure injection.
 
-**Tests:** end-to-end search+fetch success; calculator comparison; empty search; insufficient evidence; API/model failures; injection recovery; report/events; no-key/no-network suite.
+**Tests:** state transition invariants, step ordering, retry/fallback/replan outcomes, exhaustion, failure injection, event ordering/redaction.
 
-**Acceptance criteria:** every assignment requirement maps to a passing test or artifact; transcripts match actual behavior and contain no secrets; tests repeat offline.
+**Acceptance criteria:** tools can only run through the engine/registry; every failure is observable; budgets cannot be exceeded; offline recovery tests pass.
 
-**DO NOT IMPLEMENT YET:** unapproved domain expansion, new providers/tools, or features absent from `PROJECT_SPEC.md`.
+**DO NOT IMPLEMENT YET:** long-term memory, parallel agents, new tools, UI, or scheduled research.
 
-## Phase 6 — Final audit
+## Phase 6 — Evidence and final report
 
-**Objective:** verify the submission against the contract and assignment rubric.
+**Objective:** verify sources and synthesize the validated research brief.
 
-**Files/components affected:** entire repository, especially control docs, README, architecture, tests, transcripts.
+**Files/components affected:** evidence store, source validator/ranker, report generator/validator, tests, report models if approved changes are needed.
 
-**Implementation work:** reconcile behavior/spec; run documented checks; inspect a live research run if credentials/provider are available; audit secrets, citations, logs, failure states, limits; resolve doc drift and record status.
+**Implementation work:** attach provenance, enforce the requested time window and evidence references, rank up to three supported developments, generate and validate the structured report and status.
 
-**Tests:** complete offline suite; CLI setup/run smoke test; final schema/citation validation; transcript reproducibility; security/secret scan.
+**Tests:** independent-source/citation/date cases, insufficient or contradictory evidence, malformed report, status rules, and offline synthesis mocks.
 
-**Acceptance criteria:** all phase gates pass; README works cleanly; architecture matches code; multi-tool use, visible plan, graceful injected recovery, structured result, and required artifacts are demonstrable.
+**Acceptance criteria:** every reported claim resolves to fetched evidence; unsupported content is omitted or labeled; JSON references and status validate.
+
+**DO NOT IMPLEMENT YET:** persistence, UI, automated publication, or speculative recommendation features.
+
+## Phase 7 — End-to-end evaluation and assignment materials
+
+**Objective:** demonstrate the take-home requirements with repeatable tests and user documentation.
+
+**Files/components affected:** synthetic fixtures, end-to-end tests, `README.md`, `EVALUATION.md`, `ARCHITECTURE.md`, sample transcripts, one-page design write-up.
+
+**Implementation work:** capture normal, recovered-failure, and insufficient-evidence runs; explain setup, assumptions, limitations, decisions, and future work.
+
+**Tests:** full offline scenario suite, no-key/no-network check, transcript reproducibility, CLI setup smoke test.
+
+**Acceptance criteria:** every assignment requirement maps to a passing test or artifact; two or three transcripts reflect actual behavior and contain no secrets.
+
+**DO NOT IMPLEMENT YET:** features not accepted in `PROJECT_SPEC.md`.
+
+## Phase 8 — Final audit
+
+**Objective:** verify implementation and submission against the contract and rubric.
+
+**Files/components affected:** complete repository.
+
+**Implementation work:** run documented checks; compare behavior/docs; audit citations, secrets, URL policy, limits, logs, and failure status; record final progress.
+
+**Tests:** complete offline suite, packaging/CLI smoke checks, report validation, transcript review, and secret scan.
+
+**Acceptance criteria:** earlier phase gates pass; clean setup works; diagrams match code; multi-tool use, planning trace, failure recovery, structured output, and deliverables are demonstrable.
 
 **DO NOT IMPLEMENT YET:** post-submission enhancements; record them for separate approval.

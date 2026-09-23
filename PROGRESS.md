@@ -2,6 +2,12 @@
 
 Initial baseline for the Autonomous Research Intelligence Agent. All implementation phases are intentionally incomplete; update only as phases pass their tests and acceptance criteria.
 
+## Phase 1 architecture contract
+
+- [x] Read all nine control documents and define component responsibilities/interfaces, structured models, lifecycle, bounded recovery policy, and model/tool boundaries in `ARCHITECTURE.md`.
+- [x] Record the architecture choices and remaining provider/resource/source-reliability decisions in `DECISIONS.md`.
+- [ ] Phase 1 application implementation and tests remain not started. This architecture-only work added no code, installed no dependencies, and made no external API calls.
+
 ## Phases
 
 - [ ] **Phase 0 — Project scaffold and configuration:** Python CLI shell, setup/configuration, safe output conventions.

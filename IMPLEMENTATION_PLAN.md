@@ -50,13 +50,13 @@ Implement one phase at a time. Do not start a later phase until the current phas
 
 **Files/components affected:** planner, LLM client implementation, plan validator implementation, prompt/schema handling, tests, `FAILURE_MODES.md` as needed.
 
-**Implementation work:** implement structured plan generation and strict validation under the fixed tool registry, preserving the approved schemas and revision budgets.
+**Implementation work:** implement the provider-neutral `LLMClient` interface and isolated Groq adapter; keep keys in environment settings; define prompt templates as constants; parse all planner output into strict Pydantic models; implement deterministic plan validation and one bounded malformed-output repair. Do not expose tool calling to the model.
 
-**Tests:** fake LLM responses for valid/malformed plans, unknown tools, invalid arguments, duplicate IDs, dependency cycles, and revision exhaustion.
+**Tests:** fake LLM responses for valid/malformed plans, missing fields, unknown tools, invalid arguments, excessive steps, invalid dependencies/cycles, and repair exhaustion; mock the provider transport to check fixed endpoint, JSON mode, environment key use, and absence of tool dispatch without network access.
 
 **Acceptance criteria:** no unvalidated plan reaches execution; one approved plan revision maximum is enforced; tests remain offline by default.
 
-**DO NOT IMPLEMENT YET:** live search/fetch/calculator behavior, execution scheduling, retries, evidence ranking, or final report synthesis.
+**DO NOT IMPLEMENT YET:** execution engine, tool execution/retries, live search/fetch/calculator behavior, runtime replanning, evidence ranking, or final report synthesis. Only planner/provider retry within the declared model-operation bound is in scope here.
 
 ## Phase 4 — Tool adapters and result validation
 

@@ -13,6 +13,7 @@ from urllib.parse import urlsplit
 from uuid import UUID, uuid4
 
 from pydantic import (
+    AliasChoices,
     AwareDatetime,
     BaseModel,
     ConfigDict,
@@ -21,6 +22,8 @@ from pydantic import (
     field_validator,
     model_validator,
 )
+
+from research_agent.limits import MAX_PLAN_STEPS, MAX_TOOL_ATTEMPTS
 
 
 class StrictModel(BaseModel):
@@ -344,44 +347,96 @@ class ToolCallTemplate(StrictModel):
 
 
 class PlanStep(StrictModel):
-    step_id: Annotated[StrictStr, Field(min_length=1)]
-    description: Annotated[StrictStr, Field(min_length=1)]
+    id: Annotated[
+        StrictStr,
+        Field(
+            min_length=1,
+            validation_alias=AliasChoices("id", "step_id"),
+            serialization_alias="step_id",
+        ),
+    ]
+    objective: Annotated[
+        StrictStr,
+        Field(
+            min_length=1,
+            validation_alias=AliasChoices("objective", "description"),
+            serialization_alias="description",
+        ),
+    ]
     tool_name: ToolName
-    arguments: ToolArguments
-    depends_on: list[StrictStr] = Field(default_factory=list)
-    success_criteria: Annotated[StrictStr, Field(min_length=1)]
+    input: ToolArguments = Field(
+        validation_alias=AliasChoices("input", "arguments"),
+        serialization_alias="arguments",
+    )
+    expected_output: Annotated[
+        StrictStr,
+        Field(
+            min_length=1,
+            validation_alias=AliasChoices("expected_output", "success_criteria"),
+            serialization_alias="success_criteria",
+        ),
+    ]
+    dependencies: list[StrictStr] = Field(
+        validation_alias=AliasChoices("dependencies", "depends_on"),
+        serialization_alias="depends_on",
+    )
+    status: StepStatus
     fallback: ToolCallTemplate | None = None
     recovery_of_step_id: StrictStr | None = None
 
     @model_validator(mode="after")
     def validate_step(self) -> PlanStep:
-        _validate_tool_arguments(self.tool_name, self.arguments)
-        if len(set(self.depends_on)) != len(self.depends_on):
+        _validate_tool_arguments(self.tool_name, self.input)
+        if self.status != StepStatus.PENDING:
+            raise ValueError("new plan steps must have PENDING status")
+        if len(set(self.dependencies)) != len(self.dependencies):
             raise ValueError("step dependencies must be unique")
-        if self.step_id in self.depends_on:
+        if self.id in self.dependencies:
             raise ValueError("a step cannot depend on itself")
         return self
+
+    @property
+    def step_id(self) -> str:
+        return self.id
+
+    @property
+    def description(self) -> str:
+        return self.objective
+
+    @property
+    def arguments(self) -> ToolArguments:
+        return self.input
+
+    @property
+    def success_criteria(self) -> str:
+        return self.expected_output
+
+    @property
+    def depends_on(self) -> list[str]:
+        return self.dependencies
 
 
 class Plan(StrictModel):
     plan_id: UUID = Field(default_factory=uuid4)
     goal_id: UUID
     revision: Annotated[int, Field(ge=1)] = 1
-    steps: Annotated[list[PlanStep], Field(min_length=1, max_length=8)]
+    steps: Annotated[
+        list[PlanStep], Field(min_length=1, max_length=MAX_PLAN_STEPS)
+    ]
     replaces_plan_id: UUID | None = None
 
     @model_validator(mode="after")
     def validate_steps_and_dependencies(self) -> Plan:
-        step_ids = [step.step_id for step in self.steps]
+        step_ids = [step.id for step in self.steps]
         if len(set(step_ids)) != len(step_ids):
             raise ValueError("plan step IDs must be unique")
         known_ids = set(step_ids)
         dependencies: dict[str, list[str]] = {}
         for step in self.steps:
-            missing = set(step.depends_on) - known_ids
+            missing = set(step.dependencies) - known_ids
             if missing:
-                raise ValueError(f"unknown dependencies for {step.step_id}: {sorted(missing)}")
-            dependencies[step.step_id] = step.depends_on
+                raise ValueError(f"unknown dependencies for {step.id}: {sorted(missing)}")
+            dependencies[step.id] = step.dependencies
 
         visiting: set[str] = set()
         visited: set[str] = set()
@@ -410,7 +465,7 @@ class ValidatedPlan(StrictModel):
     approved_at: AwareDatetime = Field(
         default_factory=lambda: datetime.now(timezone.utc)
     )
-    validator_version: StrictStr = "phase2-placeholder"
+    validator_version: StrictStr = "phase3"
 
 
 class Failure(StrictModel):
@@ -431,7 +486,7 @@ class ToolCall(StrictModel):
     step_id: StrictStr
     tool_name: ToolName
     arguments: ToolArguments
-    attempt: Annotated[int, Field(ge=1, le=2)]
+    attempt: Annotated[int, Field(ge=1, le=MAX_TOOL_ATTEMPTS)]
     kind: ToolCallKind
     created_at: AwareDatetime
 
@@ -464,6 +519,12 @@ class ToolResult(StrictModel):
         return self
 
 
+class LLMResponse(StrictModel):
+    content: StrictStr
+    provider: StrictStr
+    request_id: StrictStr | None = None
+
+
 class Evidence(StrictModel):
     evidence_id: UUID = Field(default_factory=uuid4)
     source_url: StrictStr
@@ -493,7 +554,7 @@ class ExecutionEvent(StrictModel):
     step_id: StrictStr | None = None
     call_id: UUID | None = None
     tool_name: ToolName | None = None
-    attempt: Annotated[int, Field(ge=1, le=2)] | None = None
+    attempt: Annotated[int, Field(ge=1, le=MAX_TOOL_ATTEMPTS)] | None = None
     outcome: EventOutcome
     summary: Annotated[StrictStr, Field(min_length=1)]
 
@@ -561,7 +622,7 @@ class ToolCallSummary(StrictModel):
     call_id: UUID
     step_id: StrictStr
     tool_name: ToolName
-    attempt: Annotated[int, Field(ge=1, le=2)]
+    attempt: Annotated[int, Field(ge=1, le=MAX_TOOL_ATTEMPTS)]
     outcome: EventOutcome
     duration_ms: Annotated[int, Field(ge=0)] | None = None
 

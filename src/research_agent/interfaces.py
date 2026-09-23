@@ -9,6 +9,7 @@ from research_agent.models import (
     Failure,
     FinalReport,
     Goal,
+    LLMResponse,
     Plan,
     PlanStep,
     RecoveryAction,
@@ -23,11 +24,11 @@ class AgentController(Protocol):
     def run(self, goal_text: str) -> FinalReport: ...
 
 
-class Planner(Protocol):
-    def propose(self, goal: Goal, context: Any) -> Plan: ...
+class PlannerPort(Protocol):
+    def propose(self, goal: Goal, context: Any = None) -> Plan: ...
 
 
-class PlanValidator(Protocol):
+class PlanValidatorPort(Protocol):
     def validate(
         self, goal: Goal, proposal: Plan, state: AgentState, registry: ToolRegistry
     ) -> ValidatedPlan | Failure: ...
@@ -82,5 +83,7 @@ class ReportGenerator(Protocol):
 
 
 class LLMClient(Protocol):
-    def generate(self, operation: str, payload: dict[str, Any], expected_schema: str) -> Any: ...
+    def generate(
+        self, operation: str, payload: dict[str, Any], expected_schema: str
+    ) -> LLMResponse: ...
 

@@ -7,7 +7,7 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 | Requirement | Implementation evidence | Test or artifact |
 |---|---|---|
 | Accept high-level natural-language goal | CLI accepts one goal and creates immutable run context | Normal-goal test; empty goal rejected before external calls |
-| Autonomously decompose into steps | Groq emits structured plan with tools, args, dependencies, success criteria | Mocked planner yields multi-step plan; invalid cases exercise validator |
+| Autonomously decompose into steps | Groq adapter returns text; Planner validates strict `Plan`/`PlanStep` schemas and PlanValidator binds the proposal to the goal | Offline fake planner tests cover valid output, malformed output and one repair, missing fields, unknown tools, >8 steps, and invalid dependencies |
 | Visible structured planning trace | Validated plan/state/tool events emitted before/during execution | Transcript asserts plan appears before first tool call |
 | Execute plan step by step | Orchestrator runs dependency-ordered steps | Assert tool call ordering and prerequisite gating |
 | Use at least two tools | Successful research uses web search and page fetch; calculator available for arithmetic | End-to-end test asserts search+fetch; quantitative fixture asserts calculator |
@@ -25,6 +25,7 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 - Pages representing primary sources, independent corroboration, copied reporting, contradictory claims, malformed content, unsafe links, and missing publication dates.
 - Quantitative comparison with known values to verify calculator behavior.
 - Fake Groq responses: valid plans/reports, malformed JSON, invalid tool names, dangling citations, transient/permanent failures.
+- Mocked Groq HTTP transport: assert configured environment model/key use, fixed provider endpoint, JSON response mode, bounded response size, no tool definitions, and sanitized errors without live network access.
 - Injected timeout, invalid response, retry exhaustion, and unsafe URL outcomes.
 
 ## Required scenarios

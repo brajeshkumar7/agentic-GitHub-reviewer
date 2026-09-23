@@ -1,5 +1,6 @@
-"""LLMClient interface placeholder; no provider calls are implemented."""
+"""Provider-neutral LLM boundary; see ``providers.groq`` for its adapter."""
 
 from research_agent.interfaces import LLMClient
+from research_agent.models import LLMResponse
 
-__all__ = ["LLMClient"]
+__all__ = ["LLMClient", "LLMResponse"]

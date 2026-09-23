@@ -16,7 +16,7 @@ This is the Phase 1 engineering contract for the Autonomous Research Intelligenc
 | Component | Responsibility | Interface contract |
 |---|---|---|
 | `AgentController` | CLI-facing run coordinator. Constructs `Goal` and `AgentState`, invokes planner/validator/engine/synthesis in order, handles terminal output. Does not directly execute tools. | `run(goal_text: str) -> FinalReport` |
-| `Planner` | Requests a structured `Plan` proposal from the LLM using the goal, fixed tool descriptions, and bounded recovery context. It does not decide whether a plan is authorized. | `propose(goal: Goal, context: PlanningContext) -> PlanProposal` |
+| `Planner` | Requests a structured `Plan` proposal from the LLM using fixed prompt templates, goal, fixed tool descriptions, and bounded recovery context. It parses raw response text into strict `Plan` data and does not decide whether a plan is authorized. | `propose(goal: Goal, context: PlanningContext) -> PlanProposal` |
 | `PlanValidator` | Strictly validates schemas, step/dependency limits, tool allowlist and argument schemas, fallback declarations, and plan safety. Produces an approved plan or validation `Failure`. | `validate(goal: Goal, proposal: PlanProposal, state: AgentState, registry: ToolRegistry) -> ValidatedPlan | Failure` |
 | `ExecutionEngine` | Sole stateful executor. Selects steps deterministically, checks dependencies and budgets, dispatches calls through registry, updates state/store/events, and delegates all failures to `FailureHandler`. | `execute(plan: ValidatedPlan, state: AgentState) -> AgentState` |
 | `AgentState` | Run-local state record: lifecycle state, goal, active plan/version, step statuses, call attempts, budgets, events, evidence IDs, failures, and recovery history. No durable persistence in v1. | Strict model; transitions are applied only by the engine/controller through allowed transition rules. |
@@ -28,9 +28,9 @@ This is the Phase 1 engineering contract for the Autonomous Research Intelligenc
 | `EvidenceStore` | Run-local evidence ledger. Adds normalized fetched sources and claim links, deduplicates provenance, resolves IDs, and supplies validated evidence to synthesis. | `add(evidence: Evidence) -> EvidenceId`; `get(evidence_id: EvidenceId) -> Evidence`; `for_goal(goal_id: GoalId) -> list[Evidence]` |
 | `EventLogger` | Records sequenced typed events and renders the approved visible trace fields to stderr/report. Redacts secrets and excludes reasoning/prompt content. | `emit(event: ExecutionEvent) -> None` |
 | `ReportGenerator` | Requests a concise evidence-grounded summary through `LLMClient`, validates evidence references and `FinalReport`, and selects `COMPLETED`, `PARTIAL`, or `FAILED` under the report policy. | `generate(goal: Goal, plan: Plan, state: AgentState, evidence: list[Evidence]) -> FinalReport` |
-| `LLMClient` abstraction | Provides structured plan-proposal and summary-generation requests to Groq. It has no tool registry, application callbacks, or function/tool execution. Returns raw structured response plus provider metadata or typed failure. | `generate(operation: LLMOperation, payload: dict, expected_schema: str) -> LLMResponse` |
+| `LLMClient` abstraction | Provider-neutral structured text boundary. The isolated Groq adapter uses its fixed chat-completions endpoint, JSON mode, environment credentials, bounded response size, and a finite timeout. It has no tool registry, callbacks, or function execution. | `generate(operation: LLMOperation, payload: dict, expected_schema: str) -> LLMResponse` |
 
-These are logical interfaces, not production code. Implementations must preserve the separation between proposals, validation, state transitions, and external side effects.
+The table defines logical boundaries. Implementations must preserve the separation between proposals, validation, state transitions, and external side effects. Phase 3 implements only planning, proposal validation, and the LLM provider boundary; it does not execute plans or research tools.
 
 `LLMOperation` is an allowlist containing plan proposal, plan revision, and evidence-grounded research summary only. The LLMClient cannot invoke `ToolRegistry` or mutate `AgentState`.
 
@@ -153,7 +153,7 @@ sequenceDiagram
 - Tool name and argument schemas come from the immutable registry. Model output cannot register tools, set timeouts, set attempt budgets, change status, or select a recovery action.
 - PlanValidator constrains search date bounds to the normalized Goal window and run-start time. URLFetchTool receives URLs from the goal or prior validated search results only; runtime redirects are independently checked by URL safety policy.
 - The engine owns call IDs, attempt numbers, step states, lifecycle transitions, and event sequence numbers.
-- Fixed limits: 2 total attempts per logical tool step (initial call plus at most one retry or fallback), 20 total tool invocations per run including retries/fallbacks, 2 attempts per model operation, and at most one plan revision per run. That single revision is either a malformed-plan repair or an execution replan, not one of each. Revision never resets any budget. A replacement step inherits its logical predecessor's attempt count; changing a step ID cannot create a fresh budget.
+- Fixed limits: 8 plan steps, 20 total execution/tool invocations per run including retries/fallbacks, 2 total attempts per logical tool step (initial call plus at most one retry or fallback), 2 attempts per model operation, and at most one validated-plan revision per run. A malformed structured response may use the model operation's second attempt before any Plan has been validated; this is separate from a later runtime replan. Revision never resets any budget. A replacement step inherits its logical predecessor's attempt count; changing a step ID cannot create a fresh budget.
 - Every repeated or fallback call consumes the same per-step attempt budget. A fallback is the second attempt, not a third attempt after retry.
 - With identical validated plan, state, tool results, and configuration, step ordering and recovery choice are identical. LLM-generated plan/summary text may vary but cannot change execution policy.
 
@@ -193,7 +193,7 @@ The FailureHandler applies this order; the model may not select the action:
 
 1. **Retry:** For transient timeout, connection error, HTTP 5xx, or temporary 429, repeat the same validated call once if the step and run budgets permit. Do not alter arguments during a retry.
 2. **Fallback:** If a retry was not selected for the first attempt, use the step's one predeclared, PlanValidator-approved fallback when the failure category is explicitly fallback-eligible. Examples: another search query for empty results; another URL candidate already returned by search for a page-specific fetch failure. A fallback consumes the step's remaining attempt; it is not followed by another retry. A transient call that already used its retry has no attempt left for fallback.
-3. **Replan:** If a semantic/coverage failure remains recoverable, the failed logical step has an attempt slot left, and the single plan-revision allowance remains, ask Planner for a replacement of unresolved work only. Validate the new plan; preserve completed work and all attempt/call budgets. A replacement step carries `recovery_of_step_id` and inherits the failed step's attempt count. Replanning does not authorize unsafe tools or repeat completed steps.
+3. **Replan:** If a semantic/coverage failure remains recoverable, the failed logical step has an attempt slot left, and the single validated-plan revision allowance remains, ask Planner for a replacement of unresolved work only. Validate the new plan; preserve completed work and all attempt/call budgets. A replacement step carries `recovery_of_step_id` and inherits the failed step's attempt count. Replanning does not authorize unsafe tools or repeat completed steps.
 4. **Permanently fail:** Mark the step `FAILED` when failure is non-retryable and no approved fallback/replan applies, a budget is exhausted, or repair validation fails. Mark dependent steps `SKIPPED`; continue independent work if useful, then return `PARTIAL` or `FAILED`.
 
 Failure classification:
@@ -218,11 +218,11 @@ All boundary data uses strict Pydantic models (strict type coercion, unknown fie
 
 ### `PlanStep`
 
-`{step_id: str, description: non-empty action summary, tool_name: ToolName, arguments: tool-specific input model, depends_on: list[step_id], success_criteria: non-empty str, fallback: ToolCallTemplate | null, recovery_of_step_id: str | null}`. Description is an action summary, not reasoning. Step IDs are unique, dependencies refer to other plan steps, graph is acyclic, and fallback arguments are validated by the same registry. `ToolCallTemplate` contains only `{tool_name, arguments}`; the engine supplies identity/attempt metadata. A replacement step records the failed logical step it continues and shares its attempt count.
+`PlanStep` validates the planner-facing fields `{id, objective, tool_name, input, expected_output, dependencies, status}` plus optional fallback/recovery metadata. `status` must be `PENDING` in a new proposal. `input` is one of the approved tool argument schemas. Internally, report serialization uses the compatible names `{step_id, description, tool_name, arguments, success_criteria, depends_on, status}`. IDs are unique, dependencies refer to other plan steps, and the graph is acyclic. `ToolCallTemplate` contains only `{tool_name, arguments}`; the engine supplies identity/attempt metadata. A replacement step records the failed logical step it continues and shares its attempt count.
 
 ### `ToolCall`
 
-`{call_id: UUID, run_id: UUID, step_id: str, tool_name: ToolName, arguments: tool-specific input model, attempt: 1..2, kind: primary | retry | fallback}`. Engine supplies call ID, attempt, and kind; planner only proposes the step's tool and arguments.
+`{call_id: UUID, run_id: UUID, step_id: str, tool_name: ToolName, arguments: validated tool-specific input model, attempt: 1..2, kind: primary | retry | fallback}`. `tool_name` selects only one of the three fixed schemas; mismatched arguments fail validation. Engine supplies identity/attempt/kind; planner only proposes step input and tool name.
 
 ### `ToolResult`
 

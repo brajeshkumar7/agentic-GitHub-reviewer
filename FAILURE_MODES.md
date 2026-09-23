@@ -6,7 +6,7 @@ All failures are observable, classified by the orchestrator, and bounded by `PRO
 |---|---|---|---|
 | Tool timeout | Connect/read deadline exceeded | Retry once if transient and budget remains | Record attempts; exhaustion fails step, skips blocked dependents, and allows only independent work. |
 | Invalid tool response | Schema/type validation fails, field missing, or value out of range | One retry for transient/provider anomaly; never accept malformed data as evidence | Record validation error; persistent failure loses that evidence and is disclosed. |
-| Malformed planner output | Invalid schema/JSON, unknown tool, cycles, unsafe args, or >8 steps | One planner repair, then full validation again | No tools before valid plan; exhaustion returns `failed`. |
+| Malformed planner output | Invalid JSON/schema, missing fields, unknown tool, cycles, mismatched arguments, unsafe args, wrong goal ID, or >8 steps | One prompt-template repair attempt, then full Pydantic and plan validation again; malformed raw content is bounded before reuse and never logged | Return a sanitized controlled planning failure after two model attempts; no tools can run before a valid plan. |
 | Empty search results | Successful response has no candidates | One revised query/step through the single plan-repair allowance when useful | If still empty, return partial/failed with no fabricated developments. |
 | URL fetch failure | HTTP error, unsafe destination, timeout, unsupported content, or no extractable text | Retry once only for transient errors; permanent/policy errors are not retried | Exclude page as evidence; continue with other sources; lower item count/status if verification fails. |
 | Calculator failure | Invalid operation/operand, overflow, or divide by zero | Repair input only if validated and within plan-repair budget | Mark dependent comparison unavailable and disclose omitted calculation. |
@@ -21,7 +21,7 @@ All failures are observable, classified by the orchestrator, and bounded by `PRO
 ## Global recovery rules
 
 - Maximum 2 total attempts per tool step, including initial attempt; 20 tool invocations per run including retries.
-- Maximum 2 attempts for each model operation; at most one plan repair/replan per run.
+- Maximum 2 attempts for each model operation (one retry). A malformed planner response may be corrected once before a validated plan exists; this does not change a validated plan revision. Maximum plan length is 8; execution dispatch ceiling is 20 calls total, including retries/fallbacks; at most one validated-plan revision is allowed per run.
 - Retry only timeouts, transient 5xx, or provider-declared temporary throttles; respect retry timing only when it fits the budget.
 - Never retry invalid input, unsafe destinations, permanent not-found/authorization errors, or deterministic calculator errors without a validated repair.
 - Every recovery action is an explicit transition from `RECOVERING`; every failure/retry is a structured event.

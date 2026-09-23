@@ -8,7 +8,7 @@ Build a Python CLI agent that accepts a natural-language research goal, creates 
 
 1. Accept one non-empty natural-language goal per run. Resolve relative time windows against a UTC run-start timestamp. If none is given, default to the preceding seven days and disclose that default.
 2. Use the configured Groq model to propose a concise structured plan before any research tool is called.
-3. Validate before execution: 1–8 uniquely identified steps, known tool names, schema-valid arguments, valid acyclic dependencies, and a success condition for every step. Reject or repair invalid output within retry limits.
+3. Validate before execution: 1–8 uniquely identified steps, known tool names, schema-valid arguments, valid acyclic dependencies, and a success condition for every step. Planner-facing `PlanStep` fields are `id`, `objective`, `tool_name`, `input`, `expected_output`, `dependencies`, and `status` (`PENDING` on a new proposal); final report serialization uses the established report names. Reject or repair invalid output within retry limits.
 4. Execute approved steps sequentially through the state machine in `ARCHITECTURE.md`. A dependent step starts only when prerequisites succeed or a validated recovery decision explicitly skips a dependency.
 5. Provide three tools: web search, HTTPS page fetch, and deterministic calculator. A successful research run must use search and page fetch (two distinct tools); use calculator when the goal requires arithmetic. Search snippets alone are never verification evidence.
 6. Verify each reported development using at least two independent fetched sources where available, preferring a primary source plus independent corroboration. If evidence is insufficient, report fewer than three developments or mark a candidate unverified; never invent support to fill a quota.
@@ -22,7 +22,7 @@ Build a Python CLI agent that accepts a natural-language research goal, creates 
 - Python 3.11+ CLI. This specification defines behavior, not application code.
 - Tool, model, and report boundaries are validated and independently mockable.
 - Use strict Pydantic v2 models for validated structured boundaries, as specified in `ARCHITECTURE.md`; forbid unknown fields and validate cross-field invariants.
-- Hard limits: 8 plan steps; 20 total tool invocations per run including retries; 2 attempts per tool step total; 2 attempts per model operation; at most one plan repair/replan per run.
+- Hard limits: 8 plan steps; 20 total tool/execution dispatches per run including retries; 2 attempts per tool step total (one retry); 2 attempts per model operation (one retry); at most one validated-plan revision per run. A malformed structured response may use the model operation retry before a valid plan exists. These limits are centralized in `research_agent.limits`.
 - Apply finite connect/read timeouts and configured response, page, search-result, and token limits. Exact byte/time/token values are an implementation gate recorded in `DECISIONS.md` before adapters are coded.
 - Offline tests require no API keys, paid inference, or live network access.
 - Reports cite evidence, identify uncertainty, distinguish verified facts from interpretation, and disclose skipped work.

@@ -18,6 +18,7 @@ from research_agent.models import (
     Goal,
     Plan,
     PlanStep,
+    StepStatus,
     ToolName,
     WebSearchInput,
 )
@@ -54,7 +55,9 @@ def test_models_accept_valid_goal_plan_and_tool_arguments() -> None:
         description="Find research sources",
         tool_name=ToolName.WEB_SEARCH,
         arguments=WebSearchInput(query="recent RAG research", max_results=5),
+        depends_on=[],
         success_criteria="Return relevant public sources",
+        status=StepStatus.PENDING,
     )
     plan = Plan(goal_id=goal.goal_id, steps=[step])
 
@@ -81,6 +84,7 @@ def test_plan_rejects_unknown_dependency() -> None:
         arguments=WebSearchInput(query="topic", max_results=1),
         depends_on=["missing"],
         success_criteria="Found a source",
+        status=StepStatus.PENDING,
     )
     with pytest.raises(ValidationError):
         Plan(goal_id=goal.goal_id, steps=[step])

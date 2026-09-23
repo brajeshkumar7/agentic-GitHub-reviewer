@@ -1,0 +1,8 @@
+"""Hard planning and call budgets shared by schemas and the planner."""
+
+MAX_PLAN_STEPS = 8
+MAX_EXECUTION_STEPS = 20
+MAX_RETRY_COUNT = 1
+MAX_MODEL_ATTEMPTS = MAX_RETRY_COUNT + 1
+MAX_TOOL_ATTEMPTS = MAX_RETRY_COUNT + 1
+MAX_PLANNER_REPAIR_CHARS = 4_000

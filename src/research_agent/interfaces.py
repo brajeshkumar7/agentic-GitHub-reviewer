@@ -88,7 +88,7 @@ class EventLogger(Protocol):
 
 class ReportGenerator(Protocol):
     def generate(
-        self, goal: Goal, plan: Plan, state: AgentState, evidence: list[Evidence]
+        self, goal: Goal, plan: Plan, state: AgentState
     ) -> FinalReport: ...
 
 

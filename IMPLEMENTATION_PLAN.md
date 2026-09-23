@@ -92,9 +92,9 @@ Implement one phase at a time. Do not start a later phase until the current phas
 
 **Files/components affected:** evidence store, source validator/ranker, report generator/validator, tests, report models if approved changes are needed.
 
-**Implementation work:** attach provenance, enforce the requested time window and evidence references, rank up to three supported developments, generate and validate the structured report and status.
+**Implementation work:** attach goal/step provenance to evidence; provide an in-memory validated evidence ledger; ground final findings in verified stored evidence; project sources deterministically; validate final report references/status; render JSON and Markdown. Source verification/ranking, CLI wiring, and final orchestration remain separate unfinished work.
 
-**Tests:** independent-source/citation/date cases, insufficient or contradictory evidence, malformed report, status rules, and offline synthesis mocks.
+**Tests:** evidence store validation/deduplication, insufficient/malformed/duplicate evidence, source-invention rejection, failed-step reporting, JSON/Markdown rendering, status rules, and offline synthesis mocks.
 
 **Acceptance criteria:** every reported claim resolves to fetched evidence; unsupported content is omitted or labeled; JSON references and status validate.
 

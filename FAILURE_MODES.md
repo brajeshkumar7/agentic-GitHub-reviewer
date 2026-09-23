@@ -27,6 +27,8 @@ All tool failures pass through `FailureHandler`; adapters return structured resu
 | Retry exhaustion | Two retries or global dispatch ceiling consumed | No further tool call. Mark the logical step failed and state the exhausted limit explicitly. |
 | Invalid replan | Replanner returns malformed/unknown-tool/invalid-dependency plan | Revalidate through `PlanValidator`; a rejected revision makes lifecycle `FAILED`. |
 | Configuration/security failure | Missing required setting, unsafe URL, invalid tool name/arguments | Do not retry or execute; return controlled terminal/step failure. |
+| Missing verified evidence | Evidence ledger is empty or contains only candidate/contradictory records | Do not call synthesis; return no findings and an explicit limitation with `failed` status. |
+| Invalid final synthesis | Malformed JSON, extra source fields/URLs, or evidence IDs outside the verified ledger | Reject generated findings, preserve ledger-derived sources, record `SYNTHESIS_INVALID`, and return a partial report/limitation. |
 
 ## Hard bounds and action order
 

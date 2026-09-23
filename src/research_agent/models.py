@@ -5,6 +5,8 @@ These models validate data only. They do not call services or execute plans.
 
 from __future__ import annotations
 
+import html
+import re
 from datetime import datetime, timezone
 from decimal import Decimal
 from enum import Enum
@@ -59,6 +61,12 @@ class RunState(str, Enum):
     COMPLETED = "COMPLETED"
     PARTIAL = "PARTIAL"
     FAILED = "FAILED"
+
+
+class ReportStatus(str, Enum):
+    COMPLETED = "completed"
+    PARTIAL = "partial"
+    FAILED = "failed"
 
 
 class StepStatus(str, Enum):
@@ -571,16 +579,27 @@ class LLMResponse(StrictModel):
 
 class Evidence(StrictModel):
     evidence_id: UUID = Field(default_factory=uuid4)
-    source_url: StrictStr
-    title: StrictStr
+    goal_id: UUID
+    step_id: Annotated[StrictStr, Field(min_length=1, max_length=128)]
+    source_url: Annotated[StrictStr, Field(min_length=1, max_length=2_048)]
+    title: Annotated[StrictStr, Field(min_length=1, max_length=500)]
     publisher: StrictStr | None = None
     source_type: SourceType
     source_group_id: StrictStr
     published_at: AwareDatetime | None = None
     retrieved_at: AwareDatetime
-    supporting_text: StrictStr
-    supports: list[StrictStr] = Field(default_factory=list)
+    supporting_text: Annotated[StrictStr, Field(min_length=1, max_length=20_000)]
+    supports: list[Annotated[StrictStr, Field(min_length=1, max_length=300)]] = Field(
+        default_factory=list
+    )
     verification: EvidenceVerification = EvidenceVerification.CANDIDATE
+
+    @field_validator("step_id", "title", "supporting_text")
+    @classmethod
+    def evidence_text_must_not_be_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("evidence provenance and text fields must not be blank")
+        return value
 
     @field_validator("source_url")
     @classmethod
@@ -680,38 +699,250 @@ class ExecutionSummary(StrictModel):
     recovered_failures: list[RecoveryAction] = Field(default_factory=list)
 
 
+class ReportPlanStep(StrictModel):
+    id: Annotated[StrictStr, Field(min_length=1, max_length=128)]
+    objective: Annotated[StrictStr, Field(min_length=1, max_length=1_000)]
+    tool_name: ToolName
+    status: StepStatus
+    dependencies: list[Annotated[StrictStr, Field(min_length=1, max_length=128)]] = Field(
+        default_factory=list
+    )
+
+
+class ReportExecutionSummary(StrictModel):
+    steps_total: Annotated[int, Field(ge=0)]
+    steps_completed: Annotated[int, Field(ge=0)]
+    steps_failed: Annotated[int, Field(ge=0)]
+    retries: Annotated[int, Field(ge=0)]
+
+
+class Finding(StrictModel):
+    finding_id: Annotated[StrictStr, Field(min_length=1, max_length=128)]
+    title: Annotated[StrictStr, Field(min_length=1, max_length=500)]
+    summary: Annotated[StrictStr, Field(min_length=1, max_length=4_000)]
+    evidence_ids: Annotated[list[UUID], Field(min_length=1, max_length=20)]
+
+    @field_validator("title", "summary")
+    @classmethod
+    def generated_content_must_not_add_sources(cls, value: str) -> str:
+        if re.search(r"(?:https?://|www\.)", value, flags=re.IGNORECASE):
+            raise ValueError("findings must reference evidence IDs, not introduce source URLs")
+        return value
+
+    @field_validator("evidence_ids")
+    @classmethod
+    def evidence_references_must_be_unique(cls, value: list[UUID]) -> list[UUID]:
+        if len(value) != len(set(value)):
+            raise ValueError("finding evidence IDs must be unique")
+        return value
+
+
 class FinalReport(StrictModel):
-    schema_version: StrictStr = "1.0"
-    run_id: UUID
-    status: RunState
+    status: ReportStatus
     goal: Annotated[StrictStr, Field(min_length=1)]
-    run_started_at: AwareDatetime
-    run_finished_at: AwareDatetime
-    research_brief: ResearchBrief
-    sources: list[SourceCitation] = Field(default_factory=list)
-    plan: Plan
-    execution: ExecutionSummary = Field(default_factory=ExecutionSummary)
+    plan: list[ReportPlanStep] = Field(default_factory=list)
+    execution_summary: ReportExecutionSummary
     failures: list[Failure] = Field(default_factory=list)
+    recoveries: list[RecoveryAction] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
     limitations: list[StrictStr] = Field(default_factory=list)
+    sources: list[SourceCitation] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def validate_report(self) -> FinalReport:
-        terminal_states = {RunState.COMPLETED, RunState.PARTIAL, RunState.FAILED}
-        if self.status not in terminal_states:
-            raise ValueError("final report status must be terminal")
-        if self.run_started_at > self.run_finished_at:
-            raise ValueError("report finish time must not precede start time")
         source_ids = [source.evidence_id for source in self.sources]
         if len(source_ids) != len(set(source_ids)):
             raise ValueError("source evidence IDs must be unique")
-        known_ids = set(source_ids)
-        for development in self.research_brief.developments:
-            missing = set(development.evidence_ids) - known_ids
+        evidence_ids = [item.evidence_id for item in self.evidence]
+        if len(evidence_ids) != len(set(evidence_ids)):
+            raise ValueError("evidence IDs must be unique")
+        evidence_by_id = {item.evidence_id: item for item in self.evidence}
+        if set(source_ids) != set(evidence_ids):
+            raise ValueError("sources must be an exact projection of collected evidence")
+        for source in self.sources:
+            evidence = evidence_by_id[source.evidence_id]
+            if (
+                source.url != evidence.source_url
+                or source.title != evidence.title
+                or source.publisher != evidence.publisher
+                or source.source_type != evidence.source_type
+                or source.published_at != evidence.published_at
+                or source.retrieved_at != evidence.retrieved_at
+                or source.supports != evidence.supports
+            ):
+                raise ValueError("source metadata does not match collected evidence")
+        finding_ids = [finding.finding_id for finding in self.findings]
+        if len(finding_ids) != len(set(finding_ids)):
+            raise ValueError("finding IDs must be unique")
+        for finding in self.findings:
+            missing = set(finding.evidence_ids) - set(evidence_ids)
             if missing:
                 raise ValueError(
-                    f"unknown evidence IDs for {development.development_id}: {sorted(missing)}"
+                    f"unknown evidence IDs for {finding.finding_id}: {sorted(missing)}"
                 )
+            if any(
+                evidence_by_id[evidence_id].verification != EvidenceVerification.VERIFIED
+                for evidence_id in finding.evidence_ids
+            ):
+                raise ValueError("findings may cite only verified evidence")
+        if self.status == ReportStatus.COMPLETED and (
+            not self.findings
+            or not any(
+                item.verification == EvidenceVerification.VERIFIED
+                for item in self.evidence
+            )
+        ):
+            raise ValueError("completed report requires findings grounded in verified evidence")
+        plan_ids = {step.id for step in self.plan}
+        summary = self.execution_summary
+        if summary.steps_total != len(self.plan):
+            raise ValueError("execution summary total must match the plan")
+        if summary.steps_completed != sum(step.status == StepStatus.SUCCEEDED for step in self.plan):
+            raise ValueError("execution summary completed count must match plan statuses")
+        if summary.steps_failed != sum(step.status == StepStatus.FAILED for step in self.plan):
+            raise ValueError("execution summary failed count must match plan statuses")
+        for step in self.plan:
+            if set(step.dependencies) - plan_ids:
+                raise ValueError("report plan contains a missing dependency")
+        known_failures = {failure.failure_id for failure in self.failures}
+        if any(action.failure_id not in known_failures for action in self.recoveries):
+            raise ValueError("recovery references a failure absent from the report")
         return self
+
+    def to_json(self, *, indent: int = 2) -> str:
+        """Serialize the validated report to machine-readable JSON."""
+        return self.model_dump_json(indent=indent)
+
+    def to_markdown(self) -> str:
+        """Render a human-readable report while keeping observations distinct from synthesis."""
+        return _render_report_markdown(self)
+
+
+def _safe_markdown(value: str) -> str:
+    """Escape untrusted text before placing it in the Markdown document."""
+    escaped = html.escape(value.replace("\r", " ").replace("\n", " "), quote=True)
+    for char in ("\\", "`", "*", "_", "{", "}", "[", "]", "(", ")", "#", "+", "-", ".", "!", "|"):
+        escaped = escaped.replace(char, f"\\{char}")
+    return escaped
+
+
+def _safe_code(value: str) -> str:
+    """Escape HTML and remove code-span delimiters for plain inline values."""
+    return html.escape(value.replace("\r", " ").replace("\n", " "), quote=True).replace("`", "")
+
+
+def _render_report_markdown(report: FinalReport) -> str:
+    lines = [
+        "# Research Brief",
+        "",
+        "## Goal",
+        "",
+        _safe_markdown(report.goal),
+        "",
+        f"**Status:** {report.status.value}",
+        "",
+        "## Plan",
+        "",
+    ]
+    if report.plan:
+        for step in report.plan:
+            dependencies = ", ".join(_safe_markdown(item) for item in step.dependencies) or "none"
+            lines.append(
+                f"- **{_safe_markdown(step.id)}** — {_safe_markdown(step.objective)} "
+                f"({step.tool_name.value}; {step.status.value}; dependencies: {dependencies})"
+            )
+    else:
+        lines.append("No plan was available.")
+
+    summary = report.execution_summary
+    lines.extend(
+        [
+            "",
+            "## Execution Summary",
+            "",
+            f"- Steps total: {summary.steps_total}",
+            f"- Steps completed: {summary.steps_completed}",
+            f"- Steps failed: {summary.steps_failed}",
+            f"- Retries: {summary.retries}",
+            "",
+            "## Findings",
+            "",
+            "Generated synthesis grounded only in the verified evidence listed below.",
+            "",
+        ]
+    )
+    if report.findings:
+        for finding in report.findings:
+            citations = ", ".join(str(item) for item in finding.evidence_ids)
+            lines.extend(
+                [
+                    f"### {_safe_markdown(finding.title)}",
+                    "",
+                    _safe_markdown(finding.summary),
+                    "",
+                    f"Evidence IDs: {citations}",
+                    "",
+                ]
+            )
+    else:
+        lines.extend(["No findings could be synthesized from verified evidence.", ""])
+
+    lines.extend(["## Evidence", "", "Observed information collected from tool results:", ""])
+    if report.evidence:
+        for item in report.evidence:
+            lines.extend(
+                [
+                    f"- **{_safe_markdown(item.title)}** ({item.verification.value})",
+                    f"  - URL: `{_safe_code(item.source_url)}`",
+                    f"  - Producing step: `{_safe_code(item.step_id)}`",
+                    f"  - Retrieved: {item.retrieved_at.isoformat()}",
+                    f"  - Extract: {_safe_markdown(item.supporting_text)}",
+                ]
+            )
+    else:
+        lines.append("No evidence was collected.")
+
+    lines.extend(["", "## Failures and Recovery", ""])
+    if report.failures:
+        for failure in report.failures:
+            lines.append(
+                f"- **{failure.category.value}** (step {failure.step_id or 'run'}): "
+                f"{_safe_markdown(failure.message)}"
+            )
+    else:
+        lines.append("No failures recorded.")
+    if report.recoveries:
+        lines.extend(["", "Recovery actions:"])
+        for action in report.recoveries:
+            detail = (
+                f"; replacement tool {action.replacement_call.tool_name.value}"
+                if action.replacement_call is not None
+                else ""
+            )
+            lines.append(
+                f"- {action.kind.value} for step {action.target_step_id or 'run'} "
+                f"({action.reason_code.value}){detail}"
+            )
+    else:
+        lines.extend(["", "No recovery actions recorded."])
+
+    lines.extend(["", "## Limitations", ""])
+    lines.extend(f"- {_safe_markdown(item)}" for item in report.limitations)
+    if not report.limitations:
+        lines.append("No additional limitations recorded.")
+
+    lines.extend(["", "## Sources", ""])
+    if report.sources:
+        for source in report.sources:
+            publisher = f" — {_safe_markdown(source.publisher)}" if source.publisher else ""
+            lines.append(
+                f"- {_safe_markdown(source.title)}{publisher}; "
+                f"URL: `{_safe_code(source.url)}`; retrieved {source.retrieved_at.isoformat()}"
+            )
+    else:
+        lines.append("No sources were collected.")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 LLMOperationName: TypeAlias = Annotated[

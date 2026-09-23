@@ -10,7 +10,6 @@ from research_agent.models import (
     EventOutcome,
     EventType,
     ExecutionEvent,
-    ExecutionSummary,
     Evidence,
     EvidenceVerification,
     Failure,
@@ -23,7 +22,10 @@ from research_agent.models import (
     RecoveryAction,
     RecoveryKind,
     RecoveryReason,
-    ResearchBrief,
+    Finding,
+    ReportExecutionSummary,
+    ReportPlanStep,
+    ReportStatus,
     Retryability,
     RunState,
     SourceCitation,
@@ -80,9 +82,12 @@ def test_all_assignment_boundary_schemas_instantiate_and_validate() -> None:
         publisher="Example Institute",
         source_type=SourceType.PRIMARY,
         retrieved_at=now,
+        supports=["development-1"],
     )
     evidence = Evidence(
         evidence_id=evidence_id,
+        goal_id=goal.goal_id,
+        step_id="fetch",
         source_url=citation.url,
         title=citation.title,
         publisher=citation.publisher,
@@ -118,27 +123,33 @@ def test_all_assignment_boundary_schemas_instantiate_and_validate() -> None:
         summary="Validated plan proposed",
     )
     report = FinalReport(
-        run_id=run_id,
-        status=RunState.COMPLETED,
+        status=ReportStatus.COMPLETED,
         goal=goal.text,
-        run_started_at=now,
-        run_finished_at=now,
-        research_brief=ResearchBrief(
-            topic="RAG",
-            time_window_start=now,
-            time_window_end=now,
-            summary="A concise summary.",
-            comparison="The sources are comparable.",
-            conclusion="More research may be useful.",
+        plan=[ReportPlanStep(
+            id=step.id,
+            objective=step.objective,
+            tool_name=step.tool_name,
+            status=StepStatus.SUCCEEDED,
+        )],
+        execution_summary=ReportExecutionSummary(
+            steps_total=1, steps_completed=1, steps_failed=0, retries=0
         ),
+        evidence=[evidence],
+        findings=[Finding(
+            finding_id="development-1",
+            title="A research development",
+            summary="The source reports a research development.",
+            evidence_ids=[evidence_id],
+        )],
         sources=[citation],
-        plan=plan,
-        execution=ExecutionSummary(events=[event], recovered_failures=[recovery]),
+        recoveries=[recovery],
         failures=[failure],
     )
 
     assert result.output is not None
     assert evidence.verification is EvidenceVerification.VERIFIED
-    assert report.plan.steps[0].status is StepStatus.PENDING
-    assert report.model_dump(mode="json")["plan"]["steps"][0]["id"] == "search"
-    assert report.model_dump(mode="json", by_alias=True)["plan"]["steps"][0]["step_id"] == "search"
+    assert report.plan[0].status is StepStatus.SUCCEEDED
+    assert report.model_dump(mode="json")["plan"][0]["id"] == "search"
+    assert report.model_dump(mode="json")["evidence"][0]["step_id"] == "fetch"
+    assert report.to_json().startswith("{")
+    assert "## Findings" in report.to_markdown()

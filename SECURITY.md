@@ -18,6 +18,7 @@
 - Only the validated planner can propose steps; only validator/orchestrator can authorize and dispatch allowlisted tools. Content cannot modify the plan or tool registry.
 - Search snippets are discovery metadata, not verification. Claims cite fetched sources and pass evidence checks.
 - Bound page text sent to the model, retain provenance, and validate model output before rendering.
+- Final synthesis receives only verified ledger evidence and may return finding text/evidence IDs only. Reject extra source fields, source URLs in finding text, and evidence IDs absent from the verified ledger; construct report sources only from `EvidenceStore`.
 
 ## URL and network restrictions
 

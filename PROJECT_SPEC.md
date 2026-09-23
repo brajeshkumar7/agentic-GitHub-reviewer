@@ -43,19 +43,19 @@ Build a Python CLI agent that accepts a natural-language research goal, creates 
 - Standard error: concise plan, state/event summaries, and progress; no hidden reasoning or secret values.
 - Exit code zero for `completed`, nonzero for `partial` or `failed`.
 
-### Final report schema, version 1
+### Final report representations
 
-Top-level fields:
+The validated JSON report has exactly these top-level fields: `goal`, `status` (`completed`, `partial`, or `failed`), `plan`, `execution_summary`, `failures`, `recoveries`, `evidence`, `findings`, `limitations`, and `sources`.
 
-- `schema_version`: fixed `1.0`; `run_id`; `status` (`completed`, `partial`, `failed`); `goal`; `run_started_at`; `run_finished_at` (ISO 8601 UTC).
-- `research_brief`: `topic`, `time_window_start`, `time_window_end`, `summary`, `developments` (0–3 entries with `rank`, `title`, `published_at`, `description`, `relevance`, `comparison_note`, `confidence`, `evidence_ids`), `comparison`, `conclusion`.
-- `sources`: entries with `evidence_id`, canonical `url`, `title`, `publisher`, nullable `published_at`, `retrieved_at`, `source_type` (`primary`, `independent_secondary`, `other`), and `supports` identifiers.
-- `plan`: validated steps with `step_id`, `description`, `tool_name`, `status`, and `depends_on`.
-- `execution`: ordered observable events, tool-call summaries, retry counts, and recovered failures.
-- `limitations`: omitted checks, weak/unavailable evidence, date ambiguities, and incomplete steps.
+- `plan`: ordered entries with `id`, `objective`, `tool_name`, `status`, and `dependencies`.
+- `execution_summary`: `steps_total`, `steps_completed`, `steps_failed`, and `retries`.
+- `evidence`: collected records with `evidence_id`, `goal_id`, producing `step_id`, `source_url`, `title`, publisher/source metadata, extracted `supporting_text`, and `retrieved_at`.
+- `findings`: generated synthesis entries with a finding ID, title, summary, and one or more IDs of verified collected evidence.
+- `sources`: deterministic projections of the evidence ledger. The synthesis model cannot return or add source records or URLs.
 
-Every development `evidence_id` must exist in `sources`. `completed` means planned research and evidence checks passed; if fewer than three developments are verifiable, say so explicitly. Use `partial` when useful evidence exists but required work failed/remains incomplete, and `failed` when no trustworthy brief can be produced.
+The Markdown representation contains `# Research Brief` and the sections `## Goal`, `## Plan`, `## Execution Summary`, `## Findings`, `## Evidence`, `## Failures and Recovery`, `## Limitations`, and `## Sources`. It labels findings as generated synthesis and evidence as observed collected information.
 
+If verified evidence is missing, findings are omitted and the report explicitly states the evidence gap. A `completed` report requires at least one finding grounded in verified evidence. Use `partial` when useful evidence exists but planned work remains incomplete, and `failed` when no trustworthy findings can be produced.
 ## Tool contract
 
 Tools accept validated JSON and return typed success or typed failure. They do not select subsequent tools or edit the plan.
@@ -89,7 +89,7 @@ Each event includes `run_id`, UTC timestamp, event type, optional `step_id`/`too
 ## Failure recovery
 
 - Route every tool/execution failure through the state-machine recovery handler; no direct adapter retry loops.
-- Allow at most 2 total attempts per tool step and 20 total tool invocations per run including retries.
+- Allow at most 3 total calls per logical tool step (initial call plus up to 2 retries) and 20 total tool invocations per run including retries, fallbacks, and replanned replacements.
 - Retry classified transient failures only, at most twice per logical step; respect provider retry timing only if it fits the run budget.
 - Recovery order is deterministic: bounded transient retry; validated fallback for eligible semantic failures; at most one validated replan for remaining recoverable search/evidence failures; otherwise preserve the failure and continue independent work or terminate.
 - Permit at most one validated-plan revision after the initial plan is accepted; a malformed structured model response may separately use its one bounded model-operation retry before a Plan exists. Every revised plan re-enters validation before execution.

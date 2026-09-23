@@ -13,8 +13,8 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 | Use at least two tools | Successful research uses web search and page fetch; calculator available for arithmetic | End-to-end test asserts search+fetch; quantitative fixture asserts calculator |
 | Safe registered tool execution | `ToolRegistry` validates tool names, arguments, metadata and normalized outputs; each tool returns a `ToolResult` | Offline mocks assert registration/metadata, unknown-tool and invalid-argument failures, timeout/HTTP/malformed/empty search, safe URL rejection, content bounds, and invalid calculator grammar |
 | Detect tool/execution failures | Typed tool results, preserved step failures, and ordered state/tool events in `AgentState` | Offline engine tests cover failed execution, unknown/unregistered tool, malformed result, timeout, retry exhaustion, dependency skip, and fatal `FAILED` state |
-| Recover from induced failure | `FailureInjector` emits a typed one-shot timeout or malformed-response failure; `FailureHandler` selects bounded recovery | `tests/test_failure_recovery.py::test_injected_timeout_recovers_and_produces_successful_structured_report` asserts failure → retry → success and a validated `COMPLETED` report |
-| Structured final result | Versioned JSON report with brief, sources, plan, execution, failures, limitations | Schema, citation-reference, status, serialization tests |
+| Recover from induced failure | `FailureInjector` emits a typed one-shot timeout or malformed-response failure; `FailureHandler` selects bounded recovery | `tests/test_failure_recovery.py::test_injected_timeout_recovers_and_report_discloses_missing_source_evidence` asserts failure → retry → success and honest partial status when no research evidence exists |
+| Structured final result | `EvidenceStore` validates and scopes evidence; `ReportGenerator` returns the requested JSON and Markdown representations; source rows are projected from the ledger | `tests/test_report_generator.py` covers supported synthesis, failed steps, missing/unverified evidence, duplicate/malformed evidence, fabricated source rejection, and both renderings |
 | Tests and documentation | Offline suite, setup/run README, control docs, architecture | Clean setup check and offline suite |
 | Architecture diagram | Mermaid diagram in `ARCHITECTURE.md` | Manual comparison with implemented state transitions |
 | 2–3 sample transcripts | Normal, recovered-failure, insufficient-evidence runs | Reproducible with fakes and matching actual CLI output |
@@ -28,7 +28,7 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 - Quantitative comparison with known values to verify calculator behavior.
 - Fake Groq responses: valid plans/reports, malformed JSON, invalid tool names, dangling citations, transient/permanent failures.
 - Mocked Groq HTTP transport: assert configured environment model/key use, fixed provider endpoint, JSON response mode, bounded response size, no tool definitions, and sanitized errors without live network access.
-- One-shot injected timeout and malformed response, persistent timeout exhaustion, semantic replan success/failure, invalid URL, and unsafe URL outcomes. Tests inject settings and fake tools; no external APIs or credentials are used.
+- One-shot injected timeout and malformed response, persistent timeout exhaustion, semantic replan success/failure, invalid URL, unsafe URL, and evidence/report fixtures. Tests inject settings and fake clients; no external APIs or credentials are used.
 
 ## Required scenarios
 
@@ -36,11 +36,12 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 2. **Three-tool run:** goal needs a numerical comparison; calculator result is correct and inputs/evidence are traceable.
 3. **Planning failure:** malformed output is repaired once then validated, or fails before any tool call.
 4. **Empty/weak evidence:** no invented results; return fewer items and explain why.
-5. **Injected recovery demo:** run with `AGENT_INJECT_FAILURE=true`, `AGENT_FAILURE_MODE=tool_timeout`, and `AGENT_FAILURE_TOOL=calculator`. Assert one `FAILURE_INJECTED`, visible `RECOVERY_STARTED` and `RETRY_ATTEMPTED`, a second successful tool call, and a schema-valid `COMPLETED` report. Repeat with `AGENT_FAILURE_MODE=malformed_tool_response`; both are deterministic, one-shot, and offline.
+5. **Injected recovery demo:** run with `AGENT_INJECT_FAILURE=true`, `AGENT_FAILURE_MODE=tool_timeout`, and `AGENT_FAILURE_TOOL=calculator`. Assert one `FAILURE_INJECTED`, visible `RECOVERY_STARTED` and `RETRY_ATTEMPTED`, and a second successful tool call. If no source evidence was collected, the final report must be `partial`/`failed` and disclose that gap rather than claiming a completed research brief.
 6. **Semantic recovery:** an empty-result fixture selects a declared fallback or one validated revision. A malformed revision enters terminal `FAILED` and is not executed.
 7. **Exhaustion:** persistent errors stop after 3 calls per logical step (2 retries), preserve `RETRY_EXHAUSTED`, and return a partial/failed report with an explicit limitation.
 8. **Security:** page prompt injection cannot change instructions/tool permissions; unsafe URL/redirect is rejected; secret strings never appear in logs/report.
 9. **Offline mode:** end-to-end tests run using fakes with no network or credentials.
+10. **Report rendering:** with synthetic verified evidence, fake synthesis returns findings tied to evidence IDs; JSON and Markdown contain the same plan, observed evidence, generated findings, failures/recoveries, and limitations. A synthesis response containing its own source list or unknown evidence ID is rejected.
 
 ## Quality review
 

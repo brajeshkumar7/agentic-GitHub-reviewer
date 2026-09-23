@@ -23,6 +23,7 @@ from research_agent.models import (
     RecoveryKind,
     Retryability,
     RunState,
+    ReportStatus,
     StepStatus,
     ToolCall,
     ToolCallKind,
@@ -30,7 +31,8 @@ from research_agent.models import (
     ToolResult,
     ToolResultStatus,
     ValidatedPlan,
-    ResearchBrief,
+    ReportExecutionSummary,
+    ReportPlanStep,
     utc_now,
 )
 from research_agent.state import AgentState
@@ -108,32 +110,38 @@ def ready_run() -> tuple[Goal, AgentState, Plan]:
 
 
 def final_report(state: AgentState, plan: Plan) -> FinalReport:
-    """Test-only deterministic synthesis boundary for the end-to-end scenario."""
-    now = utc_now()
+    """Test-only deterministic reporting boundary for execution recovery tests."""
+    steps = [
+        ReportPlanStep(
+            id=step.id,
+            objective=step.objective,
+            tool_name=step.tool_name,
+            status=state.step_statuses.get(step.id, step.status),
+            dependencies=step.dependencies,
+        )
+        for step in plan.steps
+    ]
     return FinalReport(
-        run_id=state.run_id,
-        status=RunState.COMPLETED if not state.step_failures else RunState.PARTIAL,
+        status=ReportStatus.PARTIAL,
         goal=state.goal.text,
-        run_started_at=state.goal.run_started_at,
-        run_finished_at=now,
-        research_brief=ResearchBrief(
-            topic="test arithmetic",
-            time_window_start=state.goal.run_started_at,
-            time_window_end=now,
-            summary="The planned calculation completed after bounded recovery.",
-            developments=[],
-            comparison="Not applicable.",
-            conclusion="The computed result is 2.",
+        plan=steps,
+        execution_summary=ReportExecutionSummary(
+            steps_total=len(steps),
+            steps_completed=sum(step.status is StepStatus.SUCCEEDED for step in steps),
+            steps_failed=sum(step.status is StepStatus.FAILED for step in steps),
+            retries=sum(state.retry_counts.values()),
         ),
-        plan=plan,
         failures=state.failures,
-        limitations=([] if not state.step_failures else [
-            f"Step calc failed: {state.step_failures['calc'].message}"
-        ]),
+        recoveries=state.recovery_history,
+        limitations=(
+            [f"Step calc failed: {state.step_failures['calc'].message}"]
+            if state.step_failures
+            else ["No verified source evidence was collected for this tool-only test."]
+        ),
     )
 
 
-def test_injected_timeout_recovers_and_produces_successful_structured_report(monkeypatch) -> None:
+def test_injected_timeout_recovers_and_report_discloses_missing_source_evidence(monkeypatch) -> None:
     _, state, plan = ready_run()
     tool = DemoCalculator()
     monkeypatch.setenv("AGENT_INJECT_FAILURE", "true")
@@ -153,7 +161,8 @@ def test_injected_timeout_recovers_and_produces_successful_structured_report(mon
     assert EventType.RECOVERY_STARTED in event_types
     assert EventType.RETRY_ATTEMPTED in event_types
     assert EventType.TOOL_CALL_SUCCEEDED in event_types
-    assert report.status is RunState.COMPLETED
+    assert report.status is ReportStatus.PARTIAL
+    assert "No verified source evidence" in report.limitations[0]
     assert len(state.tool_calls) == 2
     assert [call.attempt for call in state.tool_calls] == [1, 2]
 
@@ -186,7 +195,7 @@ def test_retry_exhaustion_preserves_failed_step_and_final_report_limitation() ->
     assert state.step_statuses["calc"] is StepStatus.FAILED
     assert "Step calc failed" in report.limitations[0]
     assert "Retry budget exhausted" in report.limitations[0]
-    assert report.status is RunState.PARTIAL
+    assert report.status is ReportStatus.PARTIAL
 
 
 def test_replanning_is_selected_only_for_recoverable_semantic_failure() -> None:

@@ -10,6 +10,10 @@ import pytest
 from research_agent.limits import MAX_MODEL_ATTEMPTS, MAX_PLAN_STEPS
 from research_agent.models import Goal, LLMResponse, Plan
 from research_agent.planner import Planner, PlannerOutputError
+from research_agent.tools.calculator import CalculatorTool
+from research_agent.tools.registry import ToolRegistry
+from research_agent.tools.url_fetch import URLFetchTool
+from research_agent.tools.web_search import WebSearchTool
 
 
 def make_goal() -> Goal:
@@ -57,18 +61,40 @@ class FakeLLMClient:
         return LLMResponse(content=content, provider="fake")
 
 
+class FakeSearchProvider:
+    def search(self, search_input: Any) -> Any:
+        raise AssertionError("planner tests must not execute tools")
+
+
+def make_registry() -> ToolRegistry:
+    return ToolRegistry(
+        [
+            WebSearchTool(provider=FakeSearchProvider()),
+            URLFetchTool(),
+            CalculatorTool(),
+        ]
+    )
+
+
 def test_planner_accepts_valid_structured_output() -> None:
     goal = make_goal()
     client = FakeLLMClient([json.dumps(valid_plan_payload(goal))])
 
-    plan = Planner(client).propose(goal)
+    plan = Planner(client, make_registry()).propose(goal)
 
     assert len(plan.steps) == 2
     assert plan.steps[0].id == "search-recent"
     assert plan.steps[0].status.value == "PENDING"
     assert client.calls[0][0] == "plan_proposal"
     assert "instruction" in client.calls[0][1]
-    assert "allowed_tools" in client.calls[0][1]
+    tool_registry = client.calls[0][1]["tool_registry"]
+    assert [item["name"] for item in tool_registry] == [
+        "web_search",
+        "url_fetch",
+        "calculator",
+    ]
+    assert all("input_schema" in item for item in tool_registry)
+    assert client.calls[0][1]["max_plan_steps"] == MAX_PLAN_STEPS
 
 
 def test_planner_repairs_malformed_output_once() -> None:
@@ -76,12 +102,28 @@ def test_planner_repairs_malformed_output_once() -> None:
     valid = json.dumps(valid_plan_payload(goal))
     client = FakeLLMClient(["{not json", valid])
 
-    plan = Planner(client).propose(goal)
+    plan = Planner(client, make_registry()).propose(goal)
 
     assert plan.goal_id == goal.goal_id
     assert len(client.calls) == MAX_MODEL_ATTEMPTS
     assert client.calls[1][1]["invalid_response"] == "{not json"
     assert "untrusted data" in client.calls[1][1]["instruction"]
+    assert "tool_registry" in client.calls[1][1]
+
+
+def test_planner_rejects_tools_missing_from_runtime_registry() -> None:
+    goal = make_goal()
+    invalid_plan = json.dumps(valid_plan_payload(goal))
+    client = FakeLLMClient([invalid_plan, invalid_plan])
+    calculator_only = ToolRegistry([CalculatorTool()])
+
+    with pytest.raises(PlannerOutputError):
+        Planner(client, calculator_only).propose(goal)
+
+    assert len(client.calls) == MAX_MODEL_ATTEMPTS
+    assert [tool["name"] for tool in client.calls[0][1]["tool_registry"]] == [
+        "calculator"
+    ]
 
 
 def remove_required_field(payload: dict[str, Any]) -> None:
@@ -130,7 +172,7 @@ def test_planner_rejects_invalid_plan_after_bounded_retry(mutate: Any) -> None:
     client = FakeLLMClient([invalid, invalid])
 
     with pytest.raises(PlannerOutputError) as failure:
-        Planner(client).propose(goal)
+        Planner(client, make_registry()).propose(goal)
 
     assert failure.value.attempts == MAX_MODEL_ATTEMPTS
     assert len(client.calls) == MAX_MODEL_ATTEMPTS

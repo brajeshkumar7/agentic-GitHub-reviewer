@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from pydantic import BaseModel
+
 from research_agent.models import (
     Evidence,
     Failure,
@@ -19,6 +21,7 @@ from research_agent.models import (
 )
 from research_agent.state import AgentState
 from research_agent.tools.base import Tool
+from research_agent.tools.base import ToolMetadata
 
 
 class AgentController(Protocol):
@@ -26,7 +29,9 @@ class AgentController(Protocol):
 
 
 class PlannerPort(Protocol):
-    def propose(self, goal: Goal, context: Any = None) -> Plan: ...
+    def propose(
+        self, goal: Goal, context: Any = None
+    ) -> Plan: ...
 
 
 class PlanValidatorPort(Protocol):
@@ -40,6 +45,12 @@ class ExecutionEngine(Protocol):
 
 
 class ToolRegistry(Protocol):
+    def metadata(self) -> list[ToolMetadata]: ...
+
+    def validate_arguments(
+        self, name: str, arguments: BaseModel | dict[str, Any]
+    ) -> BaseModel: ...
+
     def dispatch(self, call: ToolCall) -> ToolResult: ...
 
 

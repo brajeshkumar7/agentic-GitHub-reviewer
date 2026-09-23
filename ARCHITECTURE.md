@@ -16,7 +16,7 @@ This is the architecture contract for the Autonomous Research Intelligence Agent
 | Component | Responsibility | Interface contract |
 |---|---|---|
 | `AgentController` | CLI-facing run coordinator. Constructs `Goal` and `AgentState`, invokes planner/validator/engine/synthesis in order, handles terminal output. Does not directly execute tools. | `run(goal_text: str) -> FinalReport` |
-| `Planner` | Requests a structured `Plan` proposal from the LLM using fixed prompt templates, goal, fixed tool descriptions, and bounded recovery context. It parses raw response text into strict `Plan` data and does not decide whether a plan is authorized. | `propose(goal: Goal, context: PlanningContext) -> PlanProposal` |
+| `Planner` | Requests a structured `Plan` proposal from the LLM using fixed prompt templates, goal, tool metadata/schema read from `ToolRegistry`, the configured step limit, and bounded recovery context. It parses raw response text into strict `Plan` data and does not decide whether a plan is authorized. | `propose(goal: Goal, context: PlanningContext) -> PlanProposal`; reads `ToolRegistry.metadata()` |
 | `PlanValidator` | Strictly validates schemas, step/dependency limits, tool allowlist and argument schemas, fallback declarations, and plan safety. Produces an approved plan or validation `Failure`. | `validate(goal: Goal, proposal: PlanProposal, state: AgentState, registry: ToolRegistry) -> ValidatedPlan | Failure` |
 | `ExecutionEngine` | Sole stateful executor. Selects steps deterministically, checks dependencies and budgets, dispatches calls through registry, updates state/store/events, and delegates all failures to `FailureHandler`. | `execute(plan: ValidatedPlan, state: AgentState) -> AgentState` |
 | `AgentState` | Run-local state record: lifecycle state, goal, active plan/version, step statuses, call attempts, budgets, events, evidence IDs, failures, and recovery history. No durable persistence in v1. | Strict model; transitions are applied only by the engine/controller through allowed transition rules. |
@@ -30,7 +30,7 @@ This is the architecture contract for the Autonomous Research Intelligence Agent
 | `ReportGenerator` | Requests a concise evidence-grounded summary through `LLMClient`, validates evidence references and `FinalReport`, and selects `COMPLETED`, `PARTIAL`, or `FAILED` under the report policy. | `generate(goal: Goal, plan: Plan, state: AgentState, evidence: list[Evidence]) -> FinalReport` |
 | `LLMClient` abstraction | Provider-neutral structured text boundary. The isolated Groq adapter uses its fixed chat-completions endpoint, JSON mode, environment credentials, bounded response size, and a finite timeout. It has no tool registry, callbacks, or function execution. | `generate(operation: LLMOperation, payload: dict, expected_schema: str) -> LLMResponse` |
 
-The table defines logical boundaries. Every tool implements the common `Tool` interface with `name`, `description`, Pydantic `input_schema` and `output_schema`, `timeout_seconds`, and `execute(ToolCall) -> ToolResult`. Implementations preserve the separation between proposals, validation, state transitions, and external side effects. Phase 3 implements planning and proposal validation; Phase 4 implements tool adapters only. The planner does not invoke tools.
+The table defines logical boundaries. Every tool implements the common `Tool` interface with `name`, `description`, Pydantic `input_schema` and `output_schema`, `timeout_seconds`, and `execute(ToolCall) -> ToolResult`. Implementations preserve the separation between proposals, validation, state transitions, and external side effects. Phase 3 implements planning and proposal validation; Phase 4 implements tool adapters only. Planner reads registry metadata to describe the currently registered tools, while PlanValidator validates every step and fallback argument against that registry. The planner does not invoke tools.
 
 `LLMOperation` is an allowlist containing plan proposal, plan revision, and evidence-grounded research summary only. The LLMClient cannot invoke `ToolRegistry` or mutate `AgentState`.
 
@@ -41,6 +41,7 @@ flowchart TB
     User[User / CLI] --> Controller[AgentController]
     Controller --> State[AgentState]
     Controller --> Planner[Planner]
+    Planner -->|read registered tool schemas| Registry[ToolRegistry]
     Planner --> LLM[LLMClient abstraction]
     Controller --> Validator[PlanValidator]
     Validator --> Registry[ToolRegistry]
@@ -86,7 +87,9 @@ sequenceDiagram
     AC->>EL: run_started(goal)
     AC->>S: transition PLANNING
     AC->>P: propose(goal, bounded context)
-    P->>L: structured plan request
+    P->>R: read available tools and schemas
+    R-->>P: registered tool metadata
+    P->>L: structured plan request with tool catalog
     L-->>P: raw structured proposal or Failure
     P-->>AC: PlanProposal
     AC->>S: transition PLAN_VALIDATION

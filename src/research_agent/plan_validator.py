@@ -27,11 +27,21 @@ class PlanValidator:
         goal: Goal,
         proposal: Plan,
         state: AgentState,
-        registry: ToolRegistry | None = None,
+        registry: ToolRegistry,
     ) -> ValidatedPlan | Failure:
-        _ = registry  # Registry dispatch is intentionally absent in this phase.
         try:
             plan = Plan.model_validate(proposal.model_dump())
+            registered_names = {item.name for item in registry.metadata()}
+            for step in plan.steps:
+                if step.tool_name not in registered_names:
+                    raise ValueError("plan references a tool that is not registered")
+                registry.validate_arguments(step.tool_name.value, step.input)
+                if step.fallback is not None:
+                    if step.fallback.tool_name not in registered_names:
+                        raise ValueError("fallback references a tool that is not registered")
+                    registry.validate_arguments(
+                        step.fallback.tool_name.value, step.fallback.arguments
+                    )
             if plan.goal_id != goal.goal_id:
                 raise ValueError("plan goal_id does not match the submitted goal")
             if state.goal.goal_id != goal.goal_id:
@@ -48,8 +58,8 @@ class PlanValidator:
                     or plan.replaces_plan_id != previous.plan_id
                 ):
                     raise ValueError("revised plan must replace the active plan exactly once")
-            return ValidatedPlan(plan=plan, validator_version="phase3")
-        except (ValidationError, ValueError) as error:
+            return ValidatedPlan(plan=plan, validator_version="phase3-registry")
+        except (ValidationError, LookupError, ValueError, TypeError) as error:
             return Failure(
                 category=FailureCategory.INVALID_ARGUMENT,
                 origin=FailureOrigin.VALIDATOR,

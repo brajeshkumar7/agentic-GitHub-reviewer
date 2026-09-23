@@ -30,7 +30,7 @@ Implement one phase at a time. Do not start a later phase until the current phas
 
 **DO NOT IMPLEMENT YET:** Python modules, dependencies, live LLM calls, external tools, persistence, or UI.
 
-## Phase 2 — Repository scaffold, configuration, schemas, and interfaces (current phase)
+## Phase 2 — Repository scaffold, configuration, schemas, and interfaces (completed)
 
 **Objective:** create the installable Python package skeleton and testable contracts without implementing agent behavior.
 
@@ -64,15 +64,15 @@ Implement one phase at a time. Do not start a later phase until the current phas
 
 **Files/components affected:** web-search provider adapter, HTTPS fetch adapter, calculator implementation, registry implementation, URL/content safety utilities, fake adapters.
 
-**Implementation work:** first resolve the search provider and resource/source-policy decisions in `DECISIONS.md`; implement bounded typed results and safety checks without adapter-owned retries.
+**Implementation work:** use the selected Brave adapter and resolved resource bounds from `DECISIONS.md`; implement provider-neutral typed tools, public HTTPS validation/redirect safety, normalized responses, and calculator grammar without adapter-owned retries.
 
-**Tests:** mocks for success, empty/malformed search, fetch timeout/redirect/content/size rejection, calculator arithmetic and errors, and provider throttling.
+**Tests:** deterministic fake providers/transports for success, empty/malformed search, timeout/HTTP failures, URL restrictions/size/content validation, calculator arithmetic and invalid expressions, and unknown tools; no live API calls.
 
 **Acceptance criteria:** all tool arguments/results validate; snippets remain discovery-only; URL/security and resource limits are enforced; adapters cannot dispatch other tools.
 
 **DO NOT IMPLEMENT YET:** multi-step execution, recovery orchestration, evidence ranking, or LLM report synthesis.
 
-## Phase 5 — Execution engine, state, events, and recovery
+## Phase 5 — Execution engine, state, events, and recovery (current phase)
 
 **Objective:** execute validated plans in order and recover through the declared state machine.
 

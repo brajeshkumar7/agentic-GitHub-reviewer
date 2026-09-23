@@ -1,6 +1,6 @@
 # Technical Architecture
 
-This is the Phase 1 engineering contract for the Autonomous Research Intelligence Agent. It specifies component boundaries, interfaces, state, data models, and deterministic execution policy. It does not implement application code. The broader functional contract and report scope remain in `PROJECT_SPEC.md`.
+This is the architecture contract for the Autonomous Research Intelligence Agent. It specifies component boundaries, interfaces, state, data models, and deterministic execution policy. Implemented phase scope is tracked in `PROGRESS.md`; the broader functional/report contract remains in `PROJECT_SPEC.md`.
 
 ## Architecture principles
 
@@ -20,17 +20,17 @@ This is the Phase 1 engineering contract for the Autonomous Research Intelligenc
 | `PlanValidator` | Strictly validates schemas, step/dependency limits, tool allowlist and argument schemas, fallback declarations, and plan safety. Produces an approved plan or validation `Failure`. | `validate(goal: Goal, proposal: PlanProposal, state: AgentState, registry: ToolRegistry) -> ValidatedPlan | Failure` |
 | `ExecutionEngine` | Sole stateful executor. Selects steps deterministically, checks dependencies and budgets, dispatches calls through registry, updates state/store/events, and delegates all failures to `FailureHandler`. | `execute(plan: ValidatedPlan, state: AgentState) -> AgentState` |
 | `AgentState` | Run-local state record: lifecycle state, goal, active plan/version, step statuses, call attempts, budgets, events, evidence IDs, failures, and recovery history. No durable persistence in v1. | Strict model; transitions are applied only by the engine/controller through allowed transition rules. |
-| `ToolRegistry` | Fixed mapping of the three approved names to tool interfaces. Validates call input, selects tool, validates typed result, and returns it. Cannot be modified by planner/tool output at runtime. | `dispatch(call: ToolCall) -> ToolResult` |
-| `WebSearchTool` | Searches the configured public web-search provider and returns bounded candidate results; snippets are discovery leads only. | `execute(call: ToolCall[WebSearchInput]) -> ToolResult[SearchResults]` |
-| `URLFetchTool` | Fetches one validated public HTTPS page, revalidates each redirect, extracts bounded content and source metadata. | `execute(call: ToolCall[URLFetchInput]) -> ToolResult[FetchedPage]` |
-| `CalculatorTool` | Performs only the allowlisted decimal operations defined in `PROJECT_SPEC.md`; never evaluates code or arbitrary expressions. | `execute(call: ToolCall[CalculatorInput]) -> ToolResult[Calculation]` |
+| `ToolRegistry` | Registers only the three approved tool names, retrieves by name, exposes input/output schema and timeout metadata, validates arguments/results, and converts dispatch errors to typed `ToolResult`. It cannot be modified by planner/tool output at runtime. | `register(tool)`, `get(name)`, `metadata()`, `validate_arguments(name, args)`, `dispatch(call: ToolCall) -> ToolResult` |
+| `WebSearchTool` | Searches through a provider-neutral interface; current isolated Brave adapter returns ordered bounded candidate results with source host and optional publication timestamp. Snippets are discovery leads only. | `execute(call: ToolCall[WebSearchInput]) -> ToolResult[SearchResults]` |
+| `URLFetchTool` | Fetches one public HTTPS page with DNS-pinned public-IP connections, no proxy, redirect revalidation, bounded response/text, status and content-type checks, and normalized extraction. | `execute(call: ToolCall[URLFetchInput]) -> ToolResult[FetchedPage]` |
+| `CalculatorTool` | Performs the approved Decimal operations or evaluates the restricted arithmetic grammar in `PROJECT_SPEC.md`; it never calls `eval()` or executes code. | `execute(call: ToolCall[CalculatorInput]) -> ToolResult[Calculation]` |
 | `FailureHandler` | Deterministically classifies failure and selects one permitted `RecoveryAction` from failure type, step/call history, prevalidated fallback, evidence sufficiency, and remaining budgets. | `recover(failure: Failure, state: AgentState, step: PlanStep) -> RecoveryAction` |
 | `EvidenceStore` | Run-local evidence ledger. Adds normalized fetched sources and claim links, deduplicates provenance, resolves IDs, and supplies validated evidence to synthesis. | `add(evidence: Evidence) -> EvidenceId`; `get(evidence_id: EvidenceId) -> Evidence`; `for_goal(goal_id: GoalId) -> list[Evidence]` |
 | `EventLogger` | Records sequenced typed events and renders the approved visible trace fields to stderr/report. Redacts secrets and excludes reasoning/prompt content. | `emit(event: ExecutionEvent) -> None` |
 | `ReportGenerator` | Requests a concise evidence-grounded summary through `LLMClient`, validates evidence references and `FinalReport`, and selects `COMPLETED`, `PARTIAL`, or `FAILED` under the report policy. | `generate(goal: Goal, plan: Plan, state: AgentState, evidence: list[Evidence]) -> FinalReport` |
 | `LLMClient` abstraction | Provider-neutral structured text boundary. The isolated Groq adapter uses its fixed chat-completions endpoint, JSON mode, environment credentials, bounded response size, and a finite timeout. It has no tool registry, callbacks, or function execution. | `generate(operation: LLMOperation, payload: dict, expected_schema: str) -> LLMResponse` |
 
-The table defines logical boundaries. Implementations must preserve the separation between proposals, validation, state transitions, and external side effects. Phase 3 implements only planning, proposal validation, and the LLM provider boundary; it does not execute plans or research tools.
+The table defines logical boundaries. Every tool implements the common `Tool` interface with `name`, `description`, Pydantic `input_schema` and `output_schema`, `timeout_seconds`, and `execute(ToolCall) -> ToolResult`. Implementations preserve the separation between proposals, validation, state transitions, and external side effects. Phase 3 implements planning and proposal validation; Phase 4 implements tool adapters only. The planner does not invoke tools.
 
 `LLMOperation` is an allowlist containing plan proposal, plan revision, and evidence-grounded research summary only. The LLMClient cannot invoke `ToolRegistry` or mutate `AgentState`.
 
@@ -206,7 +206,7 @@ Failure classification:
 
 ## Structured data-model summary
 
-All boundary data uses strict Pydantic models (strict type coercion, unknown fields forbidden, field and cross-field validation). Raw JSON from a model or tool is never treated as a trusted model instance before validation. Exact text/byte limits are configuration decisions still tracked in `DECISIONS.md`.
+All boundary data uses strict Pydantic models (strict type coercion, unknown fields forbidden, field and cross-field validation). Raw JSON from a model or tool is never treated as a trusted model instance before validation. Tool bounds are centralized in `research_agent.limits` and recorded in `DECISIONS.md`.
 
 ### `Goal`
 
@@ -227,6 +227,14 @@ All boundary data uses strict Pydantic models (strict type coercion, unknown fie
 ### `ToolResult`
 
 `{call_id: UUID, status: succeeded | failed, output: SearchResults | FetchedPage | Calculation | null, failure: Failure | null, started_at: UTC datetime, finished_at: UTC datetime}`. Cross-validation requires output on success and failure on failure.
+
+### Search and fetch outputs
+
+`SearchResults` contains ordered results `{title, url, snippet, source, published_at?}` plus safe provider metadata. `source` is the normalized hostname; search snippets remain discovery-only. `FetchedPage` contains final URL, validated 2xx status, title, publisher host, optional UTC publication time, extracted text up to 20,000 characters, retrieval time, and a truncation flag. Search requests are capped at 10 results and 1 MB; page fetch is capped at 1 MB and five redirects.
+
+### Calculator boundary
+
+Calculator input is either an allowlisted Decimal operation with operands or a restricted expression of decimal literals, parentheses, unary signs, and `+ - * /`. Expression size is limited to 256 characters and 64 AST nodes. The parser recursively handles only explicit AST node types; it never evaluates arbitrary Python.
 
 ### `Evidence`
 

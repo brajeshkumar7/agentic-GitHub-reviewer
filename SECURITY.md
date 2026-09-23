@@ -2,8 +2,9 @@
 
 ## API keys and environment variables
 
-- Store `GROQ_API_KEY` and the selected search-provider key in environment variables or an ignored local environment file.
+- Store `GROQ_API_KEY` and `BRAVE_SEARCH_API_KEY` in environment variables or an ignored local environment file.
 - `GROQ_MODEL` is a non-secret environment setting; never hard-code a model identifier.
+- `BRAVE_SEARCH_API_KEY` is required only for live Brave searches and is read from environment-backed settings.
 - Commit only placeholder `.env.example`; exclude real `.env` files and never place credentials in shell history intentionally.
 - Never put keys in prompts, tool arguments, events, exception messages, screenshots, or sample transcripts.
 - Redact authorization headers and known secret values from logs. Missing-key errors must not echo values.
@@ -19,16 +20,16 @@
 
 ## URL and network restrictions
 
-- Fetch HTTPS URLs only. URLs originate in the user goal or validated search results; do not automatically follow links from page bodies.
+- Fetch public HTTPS URLs on port 443 only. URLs originate in the user goal or validated search results; do not automatically follow links from page bodies.
 - Reject URL credentials/user-info, unsupported ports/schemes, localhost, loopback, private, link-local, multicast, and other non-public destinations.
-- Resolve and validate destination before connecting; disable automatic redirects and validate every redirect target under the same rules; cap redirect count.
+- Resolve and validate every destination before connecting; pin the socket to a validated globally routable IP while retaining TLS hostname verification; disable environment proxies; validate every redirect target under the same rules; cap redirect count at five.
 - Apply finite timeouts, response-size limits, supported content types, and per-run page/result limits. Never fetch local files, cloud metadata, or internal services.
 - Keep provider endpoints separate and fixed/configured; user input cannot override API base URLs or headers.
 
 ## Arbitrary code execution policy
 
 - No shell, code interpreter, browser scripting, plugin, or remote execution tool is in scope.
-- Calculator accepts only validated operations and numeric operands; no dynamic evaluation or code execution.
+- Calculator accepts validated operations and numeric operands or its restricted arithmetic grammar; it recursively evaluates allowlisted AST nodes and never calls `eval()` or executes code.
 - Parse retrieved pages as data only. Never run scripts, download/execute attachments, run notebooks, import packages, or install source code.
 
 ## Logging and data minimization

@@ -31,17 +31,18 @@ This log records accepted architecture and unresolved implementation choices. Ma
 | D-023 | Planner-facing `PlanStep` uses `id`, `objective`, `tool_name`, `input`, `expected_output`, `dependencies`, and required `PENDING` status. Report serialization retains the Phase 1 field names through aliases. | Satisfies the Phase 3 planning contract without changing the established version-1 report shape. |
 | D-024 | Centralize limits as 8 plan steps, 20 total execution/tool dispatches, one retry (two attempts) per model operation and per tool step, and one validated-plan replan allowance. | Makes the documented hard bounds reusable by schemas, planner, and the future execution engine. |
 | D-025 | A malformed-output correction is the second attempt of the same model operation and occurs before any validated `Plan` exists; it is separate from the one validated-plan revision used for a later runtime replan. | Preserves the required malformed-output recovery while keeping runtime plan revisions capped at one and distinguishing output parsing from changing an accepted plan. |
+| D-026 | Use Brave Web Search API behind `BraveSearchProvider`; the rest of the app consumes normalized `SearchResults`. Authenticate with `BRAVE_SEARCH_API_KEY` from process environment and call only the fixed official API origin. | Public web index and direct JSON results fit the research use case; provider isolation allows replacement. Brave currently lists $5 per 1,000 Search requests and $5 monthly credits; live usage remains opt-in and must stay within the account's chosen plan. See [official pricing](https://brave.com/search/api/) and [API reference](https://api-dashboard.search.brave.com/api-reference/web/search/post). |
+| D-027 | Tool bounds: Brave timeout 8s, request timeout for pages 10s, max search results 10, max search query 600 chars/75 words, Brave response 1 MB, page response 1 MB, extracted page text 20,000 chars, max five redirects, HTTPS port 443 only, and only globally routable destinations. | Gives predictable latency and memory bounds while reducing SSRF risk; redirect destinations are checked again before following. |
+| D-028 | Calculator accepts either the existing allowlisted Decimal operations or a restricted expression containing decimal literals, parentheses, unary `+/-`, and binary `+ - * /`; no names, calls, attributes, powers, or other AST nodes. Limit expression length to 256 characters and AST nodes to 64. | Keeps the assignment's typed arithmetic operations while supporting a clearly bounded expression form without `eval`. |
 
 ## Open decisions before tool-adapter implementation
 
-- **Search provider/API:** select a provider and confirm student/free access, key setup, request/response shape, and rate limits. Keep `WebSearchTool` provider-neutral until selected.
-- **Resource limits:** set concrete connect/read timeouts, max response/page bytes, max search results/pages, and model input/output token limits. Call/step/retry counts are already fixed above.
 - **Source reliability operations:** decide the practical rule for classifying primary publishers, independent secondary sources, and source-group independence. Search ranking alone cannot establish reliability.
-- **Exact dependency/version lock:** pin the validation library and provider SDK versions during project scaffolding; this phase chooses Pydantic v2 as the schema approach but installs nothing.
+- **Exact dependency/version lock:** pin the validation library version during final packaging; Phase 4 uses stdlib networking and adds no SDK.
 
 ## Configuration reference
 
 - `GROQ_API_KEY`: secret required for live model calls; never committed or logged.
 - `GROQ_MODEL`: non-secret model identifier for live calls; environment-configured.
-- Search provider name/key: record after provider selection; key is environment-only.
-- Search-provider selection, page/tool response limits, and source reliability operations remain open for Phase 4. Groq request timeout and response-size bounds are set in D-022.
+- `BRAVE_SEARCH_API_KEY`: optional for offline tests; required only for live Brave searches and never committed/logged.
+- Search provider and tool resource bounds are set in D-026 and D-027. Source reliability operations remain open for a later evidence phase. Groq request timeout and response-size bounds are set in D-022.

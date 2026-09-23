@@ -23,7 +23,7 @@ Build a Python CLI agent that accepts a natural-language research goal, creates 
 - Tool, model, and report boundaries are validated and independently mockable.
 - Use strict Pydantic v2 models for validated structured boundaries, as specified in `ARCHITECTURE.md`; forbid unknown fields and validate cross-field invariants.
 - Hard limits: 8 plan steps; 20 total tool/execution dispatches per run including retries; 2 attempts per tool step total (one retry); 2 attempts per model operation (one retry); at most one validated-plan revision per run. A malformed structured response may use the model operation retry before a valid plan exists. These limits are centralized in `research_agent.limits`.
-- Apply finite connect/read timeouts and configured response, page, search-result, and token limits. Exact byte/time/token values are an implementation gate recorded in `DECISIONS.md` before adapters are coded.
+- Apply finite connect/read timeouts and configured response, page, search-result, and token limits. Current tool bounds: search 8s/1 MB/10 results; fetch 10s/1 MB/20,000 extracted chars/five redirects; calculator 256 expression characters/64 AST nodes. LLM bounds are recorded in `DECISIONS.md`.
 - Offline tests require no API keys, paid inference, or live network access.
 - Reports cite evidence, identify uncertainty, distinguish verified facts from interpretation, and disclose skipped work.
 - Logs and traces contain no API keys or private model reasoning.
@@ -63,21 +63,22 @@ Tools accept validated JSON and return typed success or typed failure. They do n
 ### Web search
 
 - Input: `query`, optional UTC date bounds, and bounded `max_results`.
-- Output: ordered results `{title, url, snippet, published_at?}` and safe provider/request metadata.
+- Output: ordered results `{title, url, snippet, source, published_at?}` and safe provider metadata. `source` is normalized to the result URL hostname.
 - Results are untrusted discovery data, not evidence until fetched and checked.
 
 ### URL/page fetch
 
 - Input: one HTTPS URL from the validated goal or search results.
 - Output: `{final_url, title, publisher, published_at?, extracted_text, retrieved_at, truncated, status}`.
-- Restrict to public HTTPS content per `SECURITY.md`; reject unsafe destinations, redirects, content types, or oversized pages.
+- Restrict to public HTTPS port 443 content per `SECURITY.md`; reject unsafe destinations, redirects, content types, or oversized pages. Never allow local-file or private-network access.
 
 ### Calculator
 
-- Input: allowlisted operation (`add`, `subtract`, `multiply`, `divide`, `mean`, `percentage`) and numeric operands.
+- Input: either an allowlisted operation (`add`, `subtract`, `multiply`, `divide`, `mean`, `percentage`) and numeric operands, or a restricted arithmetic expression.
 - `add`, `subtract`, `multiply`, and `divide` require exactly two operands; `mean` requires at least one; `percentage` takes `[part, whole]` and returns `part / whole * 100`.
 - Output: numeric result and operation metadata, or typed invalid-input/divide-by-zero failure. Reject non-finite operands and non-finite results.
-- Use decimal-safe parsing; never evaluate arbitrary expressions/code.
+- Expression grammar: decimal number literals, parentheses, unary `+/-`, and binary `+ - * /`; maximum 256 characters and 64 parsed AST nodes. Reject identifiers, function calls, attributes, powers, modulo, and all other syntax nodes.
+- Use decimal-safe recursive parsing/evaluation; never call `eval()` or execute arbitrary code.
 
 ## Observable execution events
 
@@ -90,7 +91,7 @@ Each event includes `run_id`, UTC timestamp, event type, optional `step_id`/`too
 - Route every tool/execution failure through the state-machine recovery handler; no direct adapter retry loops.
 - Allow at most 2 total attempts per tool step and 20 total tool invocations per run including retries.
 - Retry only classified transient failures; respect provider retry timing only if it fits the run budget.
-- Permit at most one validated repair/replan after malformed planning or a safely correctable execution step. Repaired plans re-enter validation before execution.
+- Permit at most one validated-plan revision after the initial plan is accepted; a malformed structured model response may separately use its one bounded model-operation retry before a Plan exists. Every revised plan re-enters validation before execution.
 - On unrecoverable failure, mark the step and dependents accurately, preserve valid evidence, produce `partial` or `failed`, and explain the limitation.
 - See `FAILURE_MODES.md` for the full catalog.
 

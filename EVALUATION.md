@@ -11,6 +11,7 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 | Visible structured planning trace | Validated plan/state/tool events emitted before/during execution | Transcript asserts plan appears before first tool call |
 | Execute plan step by step | Orchestrator runs dependency-ordered steps | Assert tool call ordering and prerequisite gating |
 | Use at least two tools | Successful research uses web search and page fetch; calculator available for arithmetic | End-to-end test asserts search+fetch; quantitative fixture asserts calculator |
+| Safe registered tool execution | `ToolRegistry` validates tool names, arguments, metadata and normalized outputs; each tool returns a `ToolResult` | Offline mocks assert registration/metadata, unknown-tool and invalid-argument failures, timeout/HTTP/malformed/empty search, safe URL rejection, content bounds, and invalid calculator grammar |
 | Detect tool/execution failures | Typed errors and state-machine failure events | Timeout, invalid response, empty results, blocked fetch, calculator, model, dependency cases |
 | Recover from induced failure | One-shot injection uses normal `RECOVERING` path | Injected timeout asserts bounded retry, recovery event, accurate final status |
 | Structured final result | Versioned JSON report with brief, sources, plan, execution, failures, limitations | Schema, citation-reference, status, serialization tests |
@@ -22,6 +23,7 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 ## Synthetic fixture set
 
 - Search results with relevant, irrelevant, duplicate, stale, missing-date, and empty candidate sets.
+- Fake Brave API envelopes, malformed payloads, HTTP status errors, and timeouts; fake page responses for supported/unsupported content, oversized pages, redirects, and unsafe DNS destinations.
 - Pages representing primary sources, independent corroboration, copied reporting, contradictory claims, malformed content, unsafe links, and missing publication dates.
 - Quantitative comparison with known values to verify calculator behavior.
 - Fake Groq responses: valid plans/reports, malformed JSON, invalid tool names, dangling citations, transient/permanent failures.

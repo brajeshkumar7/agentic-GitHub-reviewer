@@ -18,6 +18,7 @@ from research_agent.models import (
     ValidatedPlan,
 )
 from research_agent.state import AgentState
+from research_agent.tools.base import Tool
 
 
 class AgentController(Protocol):
@@ -36,10 +37,6 @@ class PlanValidatorPort(Protocol):
 
 class ExecutionEngine(Protocol):
     def execute(self, plan: ValidatedPlan, state: AgentState) -> AgentState: ...
-
-
-class Tool(Protocol):
-    def execute(self, call: ToolCall) -> ToolResult: ...
 
 
 class ToolRegistry(Protocol):

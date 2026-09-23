@@ -23,7 +23,14 @@ from pydantic import (
     model_validator,
 )
 
-from research_agent.limits import MAX_PLAN_STEPS, MAX_TOOL_ATTEMPTS
+from research_agent.limits import (
+    CALCULATOR_MAX_EXPRESSION_CHARS,
+    MAX_PLAN_STEPS,
+    MAX_SEARCH_QUERY_CHARS,
+    MAX_SEARCH_QUERY_WORDS,
+    MAX_SEARCH_RESULTS,
+    MAX_TOOL_ATTEMPTS,
+)
 
 
 class StrictModel(BaseModel):
@@ -208,16 +215,21 @@ class Goal(StrictModel):
 
 
 class WebSearchInput(StrictModel):
-    query: Annotated[StrictStr, Field(min_length=1)]
+    query: Annotated[
+        StrictStr,
+        Field(min_length=1, max_length=MAX_SEARCH_QUERY_CHARS),
+    ]
     start: AwareDatetime | None = None
     end: AwareDatetime | None = None
-    max_results: Annotated[int, Field(gt=0)]
+    max_results: Annotated[int, Field(gt=0, le=MAX_SEARCH_RESULTS)]
 
     @field_validator("query")
     @classmethod
     def non_blank_query(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("search query must not be blank")
+        if len(value.split()) > MAX_SEARCH_QUERY_WORDS:
+            raise ValueError("search query exceeds the word limit")
         return value.strip()
 
     @model_validator(mode="after")
@@ -239,9 +251,10 @@ def _validate_web_url(value: str, *, require_https: bool) -> str:
 
 
 class SearchResult(StrictModel):
-    title: StrictStr
-    url: StrictStr
-    snippet: StrictStr
+    title: Annotated[StrictStr, Field(min_length=1, max_length=500)]
+    url: Annotated[StrictStr, Field(max_length=2_048)]
+    snippet: Annotated[StrictStr, Field(max_length=2_000)]
+    source: Annotated[StrictStr, Field(min_length=1, max_length=255)]
     published_at: AwareDatetime | None = None
 
     @field_validator("url")
@@ -252,11 +265,11 @@ class SearchResult(StrictModel):
 
 class SearchResults(StrictModel):
     results: list[SearchResult] = Field(default_factory=list)
-    provider_metadata: dict[str, Any] = Field(default_factory=dict)
+    provider_metadata: dict[StrictStr, StrictStr] = Field(default_factory=dict)
 
 
 class URLFetchInput(StrictModel):
-    url: StrictStr
+    url: Annotated[StrictStr, Field(max_length=2_048)]
 
     @field_validator("url")
     @classmethod
@@ -265,11 +278,12 @@ class URLFetchInput(StrictModel):
 
 
 class FetchedPage(StrictModel):
-    final_url: StrictStr
-    title: StrictStr
+    final_url: Annotated[StrictStr, Field(max_length=2_048)]
+    status: Annotated[int, Field(ge=200, lt=300)]
+    title: Annotated[StrictStr, Field(max_length=1_000)]
     publisher: StrictStr | None = None
     published_at: AwareDatetime | None = None
-    extracted_text: StrictStr
+    extracted_text: Annotated[StrictStr, Field(max_length=20_000)]
     retrieved_at: AwareDatetime
     truncated: bool
 
@@ -280,11 +294,22 @@ class FetchedPage(StrictModel):
 
 
 class CalculatorInput(StrictModel):
-    operation: CalculatorOperation
-    operands: Annotated[list[Decimal], Field(min_length=1)]
+    expression: Annotated[
+        StrictStr, Field(min_length=1, max_length=CALCULATOR_MAX_EXPRESSION_CHARS)
+    ] | None = None
+    operation: CalculatorOperation | None = None
+    operands: Annotated[list[Decimal], Field(min_length=1)] | None = None
 
     @model_validator(mode="after")
     def validate_operands(self) -> CalculatorInput:
+        if self.expression is not None:
+            if not self.expression.strip():
+                raise ValueError("calculator expression must not be blank")
+            if self.operation is not None or self.operands is not None:
+                raise ValueError("provide expression or operation and operands, not both")
+            return self
+        if self.operation is None or self.operands is None:
+            raise ValueError("calculator requires an expression or operation and operands")
         if any(not value.is_finite() for value in self.operands):
             raise ValueError("calculator operands must be finite")
         exact_two = {
@@ -304,9 +329,19 @@ class CalculatorInput(StrictModel):
 
 
 class Calculation(StrictModel):
-    operation: CalculatorOperation
-    operands: list[Decimal]
+    expression: StrictStr | None = None
+    operation: CalculatorOperation | None = None
+    operands: list[Decimal] = Field(default_factory=list)
     result: Decimal
+
+    @model_validator(mode="after")
+    def validate_calculation_shape(self) -> Calculation:
+        if self.expression is not None:
+            if self.operation is not None or self.operands:
+                raise ValueError("expression result cannot also contain operation operands")
+        elif self.operation is None or not self.operands:
+            raise ValueError("calculation requires an expression or operation operands")
+        return self
 
     @field_validator("operands", mode="after")
     @classmethod

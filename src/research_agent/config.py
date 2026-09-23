@@ -18,6 +18,7 @@ class AgentSettings(StrictModel):
 
     groq_api_key: SecretStr | None = None
     groq_model: str | None = None
+    brave_search_api_key: SecretStr | None = None
 
     @model_validator(mode="after")
     def validate_groq_pair(self) -> AgentSettings:
@@ -37,7 +38,9 @@ class AgentSettings(StrictModel):
             environ = os.environ
         key = environ.get("GROQ_API_KEY", "").strip()
         model = environ.get("GROQ_MODEL", "").strip()
+        brave_key = environ.get("BRAVE_SEARCH_API_KEY", "").strip()
         return cls(
             groq_api_key=SecretStr(key) if key else None,
             groq_model=model or None,
+            brave_search_api_key=SecretStr(brave_key) if brave_key else None,
         )

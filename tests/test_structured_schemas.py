@@ -114,13 +114,14 @@ def test_all_assignment_boundary_schemas_instantiate_and_validate() -> None:
         selected_at=now,
     )
     event = ExecutionEvent(
+        execution_id=run_id,
         run_id=run_id,
         sequence=1,
         timestamp=now,
         event_type=EventType.PLAN_CREATED,
         state=RunState.PLANNING,
-        outcome=EventOutcome.SUCCEEDED,
-        summary="Validated plan proposed",
+        status=EventOutcome.SUCCEEDED,
+        metadata={"summary": "Validated plan proposed"},
     )
     report = FinalReport(
         status=ReportStatus.COMPLETED,

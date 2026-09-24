@@ -9,7 +9,8 @@ import pytest
 
 from research_agent.limits import MAX_MODEL_ATTEMPTS, MAX_PLAN_STEPS
 from research_agent.models import Goal, LLMResponse, Plan
-from research_agent.planner import Planner, PlannerOutputError
+from research_agent.planner import Planner, PlannerOutputError, PlannerProviderError
+from research_agent.providers.groq import GroqLLMError
 from research_agent.tools.calculator import CalculatorTool
 from research_agent.tools.registry import ToolRegistry
 from research_agent.tools.url_fetch import URLFetchTool
@@ -39,7 +40,7 @@ def valid_plan_payload(goal: Goal) -> dict[str, Any]:
                 "id": "fetch-source",
                 "objective": "Read a candidate source",
                 "tool_name": "url_fetch",
-                "input": {"url": "https://example.org/report"},
+                "input": {"search_step_id": "search-recent", "result_index": 0},
                 "expected_output": "Source text and metadata",
                 "dependencies": ["search-recent"],
                 "status": "PENDING",
@@ -76,6 +77,60 @@ def make_registry() -> ToolRegistry:
     )
 
 
+@pytest.mark.parametrize("retry_after, expected_delay", [(3.5, 3.5), (None, 60.0), (0.0, 0.0)])
+def test_rate_limit_waits_before_single_retry(retry_after, expected_delay) -> None:
+    goal = make_goal()
+    timeline = []
+    reasons = []
+    class LimitedClient:
+        def generate(self, *args):
+            timeline.append("call")
+            if timeline.count("call") == 1:
+                raise GroqLLMError("http_429_rate_limit_exceeded", retryable=True,
+                    retry_after_seconds=retry_after)
+            return LLMResponse(content=json.dumps(valid_plan_payload(goal)), provider="fake")
+    plan = Planner(LimitedClient(), make_registry(), sleep=lambda delay: timeline.append(delay)).propose(
+        goal, on_retry=reasons.append)
+    assert plan.goal_id == goal.goal_id
+    assert timeline == ["call", expected_delay, "call"]
+    assert "waiting" in reasons[0] and "http_429" in reasons[0]
+
+
+@pytest.mark.parametrize("category, retryable, delay, attempts, waits", [
+    ("http_429_rate_limit_exceeded", True, 2.0, 2, [2.0]),
+    ("http_429_rate_limit_exceeded", True, 86400.0, 1, []),
+    ("http_401", False, None, 1, []),
+    ("http_503", True, None, 2, [1.0]),
+])
+def test_provider_failure_honors_attempt_and_wait_budgets(category, retryable, delay, attempts, waits) -> None:
+    calls = []
+    sleeps = []
+    class FailingClient:
+        def generate(self, *args):
+            calls.append(args)
+            raise GroqLLMError(category, retryable=retryable, retry_after_seconds=delay)
+    with pytest.raises(PlannerProviderError) as caught:
+        Planner(FailingClient(), make_registry(), sleep=sleeps.append).propose(make_goal())
+    assert len(calls) == caught.value.attempts == attempts
+    assert sleeps == waits
+    assert caught.value.retry_after_seconds == delay
+
+
+def test_malformed_plan_then_rate_limit_does_not_start_a_third_attempt() -> None:
+    timeline = []
+    class RepairLimitedClient:
+        def generate(self, *args):
+            timeline.append("call")
+            if timeline.count("call") == 1:
+                return LLMResponse(content="{}", provider="fake")
+            raise GroqLLMError("http_429_rate_limit_exceeded", retryable=True, retry_after_seconds=10)
+    with pytest.raises(PlannerProviderError) as caught:
+        Planner(RepairLimitedClient(), make_registry(), sleep=timeline.append).propose(make_goal())
+    assert timeline == ["call", 60.0, "call"]
+    assert caught.value.attempts == 2
+    assert caught.value.category == "http_429_rate_limit_exceeded"
+
+
 def test_planner_accepts_valid_structured_output() -> None:
     goal = make_goal()
     client = FakeLLMClient([json.dumps(valid_plan_payload(goal))])
@@ -97,18 +152,117 @@ def test_planner_accepts_valid_structured_output() -> None:
     assert client.calls[0][1]["max_plan_steps"] == MAX_PLAN_STEPS
 
 
+def test_planner_repairs_guessed_fetch_url_before_execution() -> None:
+    goal = make_goal()
+    broken = valid_plan_payload(goal)
+    broken["steps"][1]["input"] = {"url": "https://example.org/guessed"}
+    client = FakeLLMClient([json.dumps(broken), json.dumps(valid_plan_payload(goal))])
+    waits: list[float] = []
+    plan = Planner(client, make_registry(), sleep=waits.append).propose(goal)
+    assert plan.steps[1].input.search_step_id == "search-recent"
+    assert client.calls[1][1]["validation_errors"] == "fetch_requires_search_result_reference"
+    assert waits == [60]
+
+
+def test_planner_accepts_fetch_url_supplied_in_goal() -> None:
+    goal = Goal(text="Read https://example.org/report", run_started_at=datetime.now(timezone.utc))
+    payload = valid_plan_payload(goal)
+    payload["steps"][1]["input"] = {"url": "https://example.org/report"}
+    client = FakeLLMClient([json.dumps(payload)])
+    plan = Planner(client, make_registry()).propose(goal)
+    assert plan.steps[1].input.url == "https://example.org/report"
+
+
 def test_planner_repairs_malformed_output_once() -> None:
     goal = make_goal()
     valid = json.dumps(valid_plan_payload(goal))
     client = FakeLLMClient(["{not json", valid])
 
-    plan = Planner(client, make_registry()).propose(goal)
+    waits = []
+    plan = Planner(client, make_registry(), sleep=waits.append).propose(goal)
 
     assert plan.goal_id == goal.goal_id
     assert len(client.calls) == MAX_MODEL_ATTEMPTS
+    assert waits == [60.0]
     assert client.calls[1][1]["invalid_response"] == "{not json"
     assert "untrusted data" in client.calls[1][1]["instruction"]
     assert "tool_registry" in client.calls[1][1]
+
+
+def test_planner_retry_is_reported_without_exposing_malformed_payload() -> None:
+    goal = make_goal()
+    client = FakeLLMClient(["api_key=secret-value; not json", json.dumps(valid_plan_payload(goal))])
+    retry_events: list[str] = []
+
+    Planner(client, make_registry(), sleep=lambda _: None).propose(goal, on_retry=retry_events.append)
+
+    assert retry_events == ["malformed structured planner output (plan: json_invalid); waiting 60s before model attempt 2/2"]
+    assert "secret-value" not in retry_events[0]
+
+
+def test_repair_receives_safe_field_errors() -> None:
+    goal = make_goal()
+    broken = valid_plan_payload(goal)
+    del broken["steps"][0]["objective"]
+    broken["secret-value"] = "sensitive-content"
+    client = FakeLLMClient([json.dumps(broken), json.dumps(valid_plan_payload(goal))])
+    reasons: list[str] = []
+    Planner(client, make_registry(), sleep=lambda _: None).propose(goal, on_retry=reasons.append)
+    feedback = client.calls[1][1]["validation_errors"]
+    assert "steps.0.objective: missing" in feedback
+    assert "<field>: extra_forbidden" in feedback
+    assert "secret-value" not in feedback
+    assert "sensitive-content" not in feedback
+    assert feedback in reasons[0]
+
+
+def test_exhausted_goal_mismatch_preserves_safe_diagnostic() -> None:
+    goal = make_goal()
+    broken = valid_plan_payload(goal)
+    broken["goal_id"] = str(uuid4())
+    client = FakeLLMClient([json.dumps(broken)] * MAX_MODEL_ATTEMPTS)
+    with pytest.raises(PlannerOutputError) as caught:
+        Planner(client, make_registry(), sleep=lambda _: None).propose(goal)
+    assert caught.value.reason == "goal_id_mismatch"
+    assert caught.value.attempts == MAX_MODEL_ATTEMPTS
+
+
+def test_invalid_fetch_feedback_excludes_unrelated_union_branches() -> None:
+    goal = make_goal()
+    broken = valid_plan_payload(goal)
+    broken["steps"][1]["input"] = {"url": "<search result>"}
+    client = FakeLLMClient([json.dumps(broken)] * MAX_MODEL_ATTEMPTS)
+    with pytest.raises(PlannerOutputError) as caught:
+        Planner(client, make_registry(), sleep=lambda _: None).propose(goal)
+    assert caught.value.reason == "steps.1.input.url: value_error"
+
+
+def test_planner_accepts_search_reference() -> None:
+    goal = make_goal()
+    payload = valid_plan_payload(goal)
+    payload["steps"][1]["input"] = {"search_step_id": "search-recent", "result_index": 0}
+    client = FakeLLMClient([json.dumps(payload)])
+    plan = Planner(client, make_registry()).propose(goal)
+    assert plan.steps[1].input.search_step_id == "search-recent"
+
+
+@pytest.mark.parametrize("change", ["missing_dependency", "wrong_tool", "negative_index", "extra_field"])
+def test_invalid_search_references_rejected(change: str) -> None:
+    goal = make_goal()
+    payload = valid_plan_payload(goal)
+    step = payload["steps"][1]
+    step["input"] = {"search_step_id": "search-recent", "result_index": 0}
+    if change == "missing_dependency":
+        step["dependencies"] = []
+    elif change == "wrong_tool":
+        step["tool_name"] = "calculator"
+    elif change == "negative_index":
+        step["input"]["result_index"] = -1
+    else:
+        step["input"]["expression"] = "arbitrary path"
+    client = FakeLLMClient([json.dumps(payload)] * MAX_MODEL_ATTEMPTS)
+    with pytest.raises(PlannerOutputError):
+        Planner(client, make_registry(), sleep=lambda _: None).propose(goal)
 
 
 def test_planner_rejects_tools_missing_from_runtime_registry() -> None:
@@ -118,7 +272,7 @@ def test_planner_rejects_tools_missing_from_runtime_registry() -> None:
     calculator_only = ToolRegistry([CalculatorTool()])
 
     with pytest.raises(PlannerOutputError):
-        Planner(client, calculator_only).propose(goal)
+        Planner(client, calculator_only, sleep=lambda _: None).propose(goal)
 
     assert len(client.calls) == MAX_MODEL_ATTEMPTS
     assert [tool["name"] for tool in client.calls[0][1]["tool_registry"]] == [
@@ -172,7 +326,7 @@ def test_planner_rejects_invalid_plan_after_bounded_retry(mutate: Any) -> None:
     client = FakeLLMClient([invalid, invalid])
 
     with pytest.raises(PlannerOutputError) as failure:
-        Planner(client, make_registry()).propose(goal)
+        Planner(client, make_registry(), sleep=lambda _: None).propose(goal)
 
     assert failure.value.attempts == MAX_MODEL_ATTEMPTS
     assert len(client.calls) == MAX_MODEL_ATTEMPTS

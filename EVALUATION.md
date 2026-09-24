@@ -9,6 +9,8 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 | Accept high-level natural-language goal | CLI accepts one goal and creates immutable run context | Normal-goal test; empty goal rejected before external calls |
 | Autonomously decompose into steps | Groq adapter returns text; Planner validates strict `Plan`/`PlanStep` schemas and PlanValidator binds the proposal to the goal | Offline fake planner tests cover valid output, malformed output and one repair, missing fields, unknown tools, >8 steps, and invalid dependencies |
 | Visible structured planning trace | Validated plan/state/tool events emitted before/during execution | Transcript asserts plan appears before first tool call |
+| Structured observability and JSONL | Typed execution events carry unique IDs, execution ID, UTC timestamp, event type, status, and metadata; logger redacts sensitive values before JSONL serialization | `tests/test_observability.py` checks lifecycle event generation, JSONL append/parse, secret redaction, and CLI trace ordering/formatting |
+| Controller-driven CLI workflow | `AgentController` coordinates the configured planner, validator, engine, evidence ledger, and report generator; `research-agent GOAL [--events-jsonl PATH]` emits JSON to stdout and trace to stderr | `tests/test_controller.py` runs a synthetic search/fetch/synthesis workflow offline; `tests/test_scaffold.py` verifies handled configuration failure and CLI JSONL output |
 | Execute plan step by step | `ExecutionEngine` runs a validated plan in stable topological order through `ToolRegistry` | Offline engine tests assert sequential calls, dependency gating, result retention, and `SYNTHESIZING` handoff |
 | Use at least two tools | Successful research uses web search and page fetch; calculator available for arithmetic | End-to-end test asserts search+fetch; quantitative fixture asserts calculator |
 | Safe registered tool execution | `ToolRegistry` validates tool names, arguments, metadata and normalized outputs; each tool returns a `ToolResult` | Offline mocks assert registration/metadata, unknown-tool and invalid-argument failures, timeout/HTTP/malformed/empty search, safe URL rejection, content bounds, and invalid calculator grammar |
@@ -23,7 +25,7 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 ## Synthetic fixture set
 
 - Search results with relevant, irrelevant, duplicate, stale, missing-date, and empty candidate sets.
-- Fake Brave API envelopes, malformed payloads, HTTP status errors, and timeouts; fake page responses for supported/unsupported content, oversized pages, redirects, and unsafe DNS destinations.
+- Fake DDGS result lists, malformed entries, rate-limit/timeout failures; fake page responses for supported/unsupported content, oversized pages, redirects, and unsafe DNS destinations.
 - Pages representing primary sources, independent corroboration, copied reporting, contradictory claims, malformed content, unsafe links, and missing publication dates.
 - Quantitative comparison with known values to verify calculator behavior.
 - Fake Groq responses: valid plans/reports, malformed JSON, invalid tool names, dangling citations, transient/permanent failures.
@@ -45,8 +47,40 @@ Evaluation maps take-home requirements to concrete demonstrations. Default tests
 
 ## Quality review
 
+- Rate-limit regression: mock HTTP 429 with valid, missing, invalid, zero, HTTP-date, and over-budget Retry-After. Assert ordered call/wait/call behavior, one retry maximum, no early retry of a long cooldown, no retries for 401, and no raw response/secret leakage. Replay malformed output followed by 429 and assert the shared two-attempt budget prevents a third call. Controller tests assert `rate_limit`, retryable cause, visible delay, failed report, and zero tool dispatches. Schema-deduplication tests assert equivalent schema content and no mutation of caller payload.
+
 - Confirm UTC cutoff is stable and recent developments fall within it.
 - Check source independence/reliability rationale; snippets are never verification citations.
 - Ensure wording separates sourced claims from interpretation and marks uncertainty.
 - Check retry/tool/model limits, states, and report status against the spec.
+- Keep retrieval verification distinct from source authority ranking and claim-level corroboration; current reports disclose that remaining limitation.
 - Inspect transcripts for ordering, readability, recovery evidence, and secret redaction.
+# Planner repair feedback regression (D-042)
+
+D-046 synthesis tests cover transient retry success, exhausted 429, over-budget
+Retry-After, non-retryable provider failure, visible retry events, and preserved
+evidence with no fabricated findings. Full offline suite: 121 passed.
+
+D-045 adds `tests/test_fetch_transport.py`: real handler delegation and connection
+initialization with mocked sockets, correct public-IP destination and TLS hostname,
+and private-IP rejection before socket creation. Full offline suite: 117 passed.
+These tests close a coverage gap in earlier injected-transport tests; live page
+availability and successful live research are not established by this suite.
+
+D-044 regressions cover a guessed HTTPS URL repaired to a search reference,
+a literal URL explicitly supplied in the goal, independent PlanValidator
+rejection, and executor authorization despite bypassed validation. Full offline
+suite: 114 passed; no live APIs were called.
+
+D-043 adds offline tests for a reference-based search/fetch/final-report run
+without a source URL supplied to the planner, missing-result failure without
+fetch dispatch, valid reference parsing, rejected missing dependencies/wrong
+tools/negative indices/extra fields, and selected-tool-only URL diagnostics.
+Full suite: 112 passed. Live model compliance remains unverified.
+
+Offline tests cover missing-field feedback followed by a valid repaired plan,
+redaction of arbitrary extra-field names and values in public diagnostics,
+bounded goal-ID mismatch failure, and validation details in terminal reports.
+The full suite passed: 104 tests. This proves the deterministic repair contract;
+it does not establish live model compliance or successful end-to-end research.
+

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from pydantic import BaseModel
@@ -30,7 +31,11 @@ class AgentController(Protocol):
 
 class PlannerPort(Protocol):
     def propose(
-        self, goal: Goal, context: Any = None
+        self,
+        goal: Goal,
+        context: Any = None,
+        *,
+        on_retry: Callable[[str], None] | None = None,
     ) -> Plan: ...
 
 

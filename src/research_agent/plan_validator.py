@@ -12,7 +12,11 @@ from research_agent.models import (
     Goal,
     Plan,
     Retryability,
+    SearchResultReference,
     ToolName,
+    URLFetchInput,
+    SearchResults,
+    ToolResultStatus,
     ValidatedPlan,
     utc_now,
 )
@@ -32,16 +36,31 @@ class PlanValidator:
         try:
             plan = Plan.model_validate(proposal.model_dump())
             registered_names = {item.name for item in registry.metadata()}
+            discovered_urls = {
+                candidate.url for result in state.tool_results
+                if result.status == ToolResultStatus.SUCCEEDED
+                and isinstance(result.output, SearchResults)
+                for candidate in result.output.results
+            }
             for step in plan.steps:
                 if step.tool_name not in registered_names:
                     raise ValueError("plan references a tool that is not registered")
-                registry.validate_arguments(step.tool_name.value, step.input)
+                if not isinstance(step.input, SearchResultReference):
+                    registry.validate_arguments(step.tool_name.value, step.input)
+                    if (isinstance(step.input, URLFetchInput)
+                            and step.input.url not in goal.text
+                            and step.input.url not in discovered_urls):
+                        raise ValueError("fetch requires a search result reference")
                 if step.fallback is not None:
                     if step.fallback.tool_name not in registered_names:
                         raise ValueError("fallback references a tool that is not registered")
                     registry.validate_arguments(
                         step.fallback.tool_name.value, step.fallback.arguments
                     )
+                    if (isinstance(step.fallback.arguments, URLFetchInput)
+                            and step.fallback.arguments.url not in goal.text
+                            and step.fallback.arguments.url not in discovered_urls):
+                        raise ValueError("fallback fetch URL has no authorized source")
             if plan.goal_id != goal.goal_id:
                 raise ValueError("plan goal_id does not match the submitted goal")
             if state.goal.goal_id != goal.goal_id:

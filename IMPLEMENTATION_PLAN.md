@@ -64,7 +64,7 @@ Implement one phase at a time. Do not start a later phase until the current phas
 
 **Files/components affected:** web-search provider adapter, HTTPS fetch adapter, calculator implementation, registry implementation, URL/content safety utilities, fake adapters.
 
-**Implementation work:** use the selected Brave adapter and resolved resource bounds from `DECISIONS.md`; implement provider-neutral typed tools, public HTTPS validation/redirect safety, normalized responses, and calculator grammar without adapter-owned retries.
+**Implementation work:** use the selected DDGS adapter and resolved resource bounds from `DECISIONS.md`; implement provider-neutral typed tools, public HTTPS validation/redirect safety, normalized responses, and calculator grammar without adapter-owned retries. Search uses the DuckDuckGo backend and requires no search API credential.
 
 **Tests:** deterministic fake providers/transports for success, empty/malformed search, timeout/HTTP failures, URL restrictions/size/content validation, calculator arithmetic and invalid expressions, and unknown tools; no live API calls.
 
@@ -90,13 +90,13 @@ Implement one phase at a time. Do not start a later phase until the current phas
 
 **Objective:** verify sources and synthesize the validated research brief.
 
-**Files/components affected:** evidence store, source validator/ranker, report generator/validator, tests, report models if approved changes are needed.
+**Files/components affected:** evidence store, controller, source validator/ranker, report generator/validator, CLI composition/output, tests, report models if approved changes are needed.
 
-**Implementation work:** attach goal/step provenance to evidence; provide an in-memory validated evidence ledger; ground final findings in verified stored evidence; project sources deterministically; validate final report references/status; render JSON and Markdown. Source verification/ranking, CLI wiring, and final orchestration remain separate unfinished work.
+**Implementation work:** attach goal/step provenance to evidence; provide an in-memory validated evidence ledger; wire Planner → PlanValidator → ExecutionEngine → evidence collection → ReportGenerator through AgentController; compose the default Groq/DDGS/tools stack in the CLI; ground final findings in retrieved evidence; project sources deterministically; validate final report references/status; render JSON and Markdown. Source authority ranking and claim-level independent corroboration remain required Phase 6 work.
 
-**Tests:** evidence store validation/deduplication, insufficient/malformed/duplicate evidence, source-invention rejection, failed-step reporting, JSON/Markdown rendering, status rules, and offline synthesis mocks.
+**Tests:** evidence store validation/deduplication, insufficient/malformed/duplicate evidence, source-invention rejection, controller lifecycle integration with fake planner/tools/LLM, CLI JSON output and JSONL events, failed-step reporting, JSON/Markdown rendering, status rules, and offline synthesis mocks.
 
-**Acceptance criteria:** every reported claim resolves to fetched evidence; unsupported content is omitted or labeled; JSON references and status validate.
+**Acceptance criteria:** the CLI runs through the controller without bypassing plan validation or engine state; every reported claim resolves to fetched evidence; unsupported content is omitted or labeled; JSON references and status validate; normal and handled-failure paths are tested offline.
 
 **DO NOT IMPLEMENT YET:** persistence, UI, automated publication, or speculative recommendation features.
 
@@ -127,3 +127,17 @@ Implement one phase at a time. Do not start a later phase until the current phas
 **Acceptance criteria:** earlier phase gates pass; clean setup works; diagrams match code; multi-tool use, planning trace, failure recovery, structured output, and deliverables are demonstrable.
 
 **DO NOT IMPLEMENT YET:** post-submission enhancements; record them for separate approval.
+
+## Phase 9 — Structured observability (user-requested follow-up increment)
+
+**Objective:** make the approved planning, execution, recovery, and report lifecycle inspectable through validated structured events, JSONL logs, and a concise CLI trace.
+
+**Files/components affected:** `ExecutionEvent`/`EventType`, `AgentState`, `ExecutionEngine`, `ReportGenerator`, `EventLogger`, JSONL sink, CLI trace renderer, tests, and observability/security documentation.
+
+**Implementation work:** include stable event/execution IDs, UTC timestamp, event type, status, optional step/tool IDs, and safe structured metadata; emit lifecycle, tool, failure/recovery, synthesis, and report events; append validated redacted events as JSONL; render only goal/plan/action/outcome/recovery/final-result summaries. This follow-up does not renumber or mark the existing Phase 6–8 gates complete.
+
+**Tests:** offline event generation and ordering, required event fields, JSONL append/parse, secret redaction, visible trace output, and complete existing test suite.
+
+**Acceptance criteria:** each observable execution boundary emits typed events; JSONL has one valid event per line; logs and CLI output exclude secrets and hidden reasoning; recovery and terminal failures remain visible; all offline tests pass.
+
+**DO NOT IMPLEMENT YET:** asynchronous or multi-agent logging, remote log shipping, or persistent application state. The full controller-driven CLI workflow is tracked under Phase 6 and was implemented by the D-036 follow-up.

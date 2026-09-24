@@ -193,6 +193,7 @@ def test_retry_exhaustion_preserves_failed_step_and_final_report_limitation() ->
     assert tool.calls == MAX_RETRIES_PER_STEP + 1
     assert state.retry_counts["calc"] == MAX_RETRIES_PER_STEP
     assert state.step_statuses["calc"] is StepStatus.FAILED
+    assert EventType.STEP_FAILED in [event.event_type for event in state.events]
     assert "Step calc failed" in report.limitations[0]
     assert "Retry budget exhausted" in report.limitations[0]
     assert report.status is ReportStatus.PARTIAL

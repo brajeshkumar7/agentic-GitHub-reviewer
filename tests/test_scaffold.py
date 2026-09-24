@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sys
 from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
@@ -114,7 +116,9 @@ def test_config_rejects_incomplete_or_blank_credentials(values: dict[str, str]) 
         AgentSettings.from_env(values)
 
 
-def test_cli_help_and_placeholder_entrypoint(capsys: pytest.CaptureFixture[str]) -> None:
+def test_cli_help_and_controller_entrypoint(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
     from research_agent.cli import main
 
     with pytest.raises(SystemExit) as help_exit:
@@ -122,15 +126,55 @@ def test_cli_help_and_placeholder_entrypoint(capsys: pytest.CaptureFixture[str])
     assert help_exit.value.code == 0
     assert "natural-language research goal" in capsys.readouterr().out
 
-    assert main(["Research RAG systems"]) == 3
-    assert "Scaffold only" in capsys.readouterr().err
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    monkeypatch.delenv("GROQ_MODEL", raising=False)
+    monkeypatch.delenv("AGENT_INJECT_FAILURE", raising=False)
+    monkeypatch.delenv("AGENT_FAILURE_MODE", raising=False)
+    monkeypatch.delenv("AGENT_FAILURE_TOOL", raising=False)
+    assert main(["Research RAG systems"]) == 1
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert payload["status"] == "failed"
+    assert "[GOAL]" in captured.err
+    assert "Scaffold only" not in captured.err
+
+
+def test_cli_writes_jsonl_events_and_one_json_report(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    from research_agent.cli import main
+
+    for name in (
+        "GROQ_API_KEY",
+        "GROQ_MODEL",
+        "AGENT_INJECT_FAILURE",
+        "AGENT_FAILURE_MODE",
+        "AGENT_FAILURE_TOOL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    event_path = Path.cwd() / f".cli-events-{uuid4()}.jsonl"
+    try:
+        assert main(["Research RAG", "--events-jsonl", str(event_path)]) == 1
+        captured = capsys.readouterr()
+        report = json.loads(captured.out)
+        events = [json.loads(line) for line in event_path.read_text(encoding="utf-8").splitlines()]
+        assert report["status"] == "failed"
+        assert events[0]["event_type"] == "GOAL_RECEIVED"
+        assert events[-1]["event_type"] == "EXECUTION_COMPLETED"
+        assert "[GOAL]" in captured.err
+    finally:
+        event_path.unlink(missing_ok=True)
 
 
 def test_cli_rejects_missing_goal(capsys: pytest.CaptureFixture[str]) -> None:
     from research_agent.cli import main
 
-    assert main([]) == 2
-    assert "goal is required" in capsys.readouterr().err
+    with pytest.raises(SystemExit) as exit_info:
+        main([])
+    assert exit_info.value.code == 2
+    assert "required: goal" in capsys.readouterr().err
 
 
 def test_package_entrypoint_starts() -> None:

@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from uuid import UUID
+from typing import Any
 
 from pydantic import Field
 
+from research_agent.event_logger import sanitize_event
 from research_agent.models import (
     EventOutcome,
     ExecutionEvent,
@@ -102,19 +104,23 @@ class AgentState(StrictModel):
         call_id: UUID | None = None,
         tool_name: ToolName | None = None,
         attempt: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> ExecutionEvent:
-        event = ExecutionEvent(
-            run_id=self.run_id,
-            sequence=len(self.events) + 1,
-            timestamp=utc_now(),
-            event_type=event_type,
-            state=self.lifecycle_state,
-            step_id=step_id,
-            call_id=call_id,
-            tool_name=tool_name,
-            attempt=attempt,
-            outcome=outcome,
-            summary=summary,
+        event = sanitize_event(
+            ExecutionEvent(
+                execution_id=self.run_id,
+                run_id=self.run_id,
+                sequence=len(self.events) + 1,
+                timestamp=utc_now(),
+                event_type=event_type,
+                state=self.lifecycle_state,
+                step_id=step_id,
+                call_id=call_id,
+                tool_name=tool_name,
+                attempt=attempt,
+                status=outcome,
+                metadata={"summary": summary, **(metadata or {})},
+            )
         )
         self.events.append(event)
         return event

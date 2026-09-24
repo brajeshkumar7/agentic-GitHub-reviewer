@@ -7,7 +7,6 @@ from typing import Protocol
 
 from pydantic import ValidationError
 
-from research_agent.config import AgentSettings
 from research_agent.limits import SEARCH_TIMEOUT_SECONDS
 from research_agent.models import (
     FailureCategory,
@@ -20,7 +19,7 @@ from research_agent.models import (
     WebSearchInput,
 )
 from research_agent.tools.base import failed_tool_result
-from research_agent.tools.providers.brave import BraveSearchError, BraveSearchProvider
+from research_agent.tools.providers.ddgs import DDGSSearchError, DDGSSearchProvider
 
 
 class SearchProvider(Protocol):
@@ -37,13 +36,8 @@ class WebSearchTool:
     def __init__(
         self,
         provider: SearchProvider | None = None,
-        *,
-        settings: AgentSettings | None = None,
     ) -> None:
-        resolved_settings = settings or AgentSettings.from_env()
-        self._provider = provider or BraveSearchProvider(
-            resolved_settings.brave_search_api_key
-        )
+        self._provider = provider or DDGSSearchProvider()
 
     def execute(self, call: ToolCall) -> ToolResult:
         started_at = datetime.now(timezone.utc)
@@ -78,16 +72,14 @@ class WebSearchTool:
                 message="Search arguments failed validation.",
                 started_at=started_at,
             )
-        except BraveSearchError as error:
+        except DDGSSearchError as error:
             category = {
-                "missing_configuration": FailureCategory.AUTH_CONFIG,
-                "authentication": FailureCategory.AUTH_CONFIG,
                 "rate_limited": FailureCategory.RATE_LIMIT,
                 "server_error": FailureCategory.SERVER_ERROR,
+                "provider_error": FailureCategory.SERVER_ERROR,
                 "timeout": FailureCategory.TIMEOUT,
                 "oversized_response": FailureCategory.INVALID_RESPONSE,
                 "invalid_response": FailureCategory.INVALID_RESPONSE,
-                "http_error": FailureCategory.INVALID_RESPONSE,
             }.get(error.category, FailureCategory.INVALID_RESPONSE)
             retryability = (
                 Retryability.RETRYABLE if error.retryable else Retryability.NON_RETRYABLE

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
@@ -8,7 +7,6 @@ from urllib.error import HTTPError
 from uuid import uuid4
 
 import pytest
-from pydantic import SecretStr
 
 from research_agent.config import AgentSettings
 from research_agent.limits import URL_FETCH_MAX_RESPONSE_BYTES
@@ -26,8 +24,7 @@ from research_agent.models import (
     WebSearchInput,
 )
 from research_agent.tools.calculator import CalculatorTool, evaluate_expression
-from research_agent.tools.providers import brave
-from research_agent.tools.providers.brave import BraveSearchError, BraveSearchProvider
+from research_agent.tools.providers.ddgs import DDGSSearchError, DDGSSearchProvider
 from research_agent.tools.registry import ToolRegistry, UnknownToolError
 from research_agent.tools.url_fetch import FetchResponse, URLFetchTool
 from research_agent.tools.web_search import WebSearchTool
@@ -64,20 +61,6 @@ class FakeSearchProvider:
         if self.error is not None:
             raise self.error
         return self.results
-
-
-class FakeHTTPResponse:
-    def __init__(self, body: bytes) -> None:
-        self.body = body
-
-    def __enter__(self) -> FakeHTTPResponse:
-        return self
-
-    def __exit__(self, *args: Any) -> None:
-        return None
-
-    def read(self, limit: int) -> bytes:
-        return self.body[:limit]
 
 
 def test_registry_registers_tools_and_exposes_validated_metadata() -> None:
@@ -144,43 +127,58 @@ def test_empty_search_is_a_typed_failure() -> None:
     assert result.failure.category is FailureCategory.EMPTY_RESULTS
 
 
-def test_brave_provider_normalizes_search_results(monkeypatch: pytest.MonkeyPatch) -> None:
-    payload = {
-        "web": {
-            "results": [
-                {
-                    "title": "RAG results",
-                    "url": "https://example.org/rag",
-                    "description": "A useful discovery snippet.",
-                    "page_age": "2026-09-22T12:30:00Z",
-                }
-            ]
-        }
-    }
-    request_values: dict[str, Any] = {}
+def test_ddgs_provider_normalizes_results_and_applies_bounds() -> None:
+    calls: dict[str, Any] = {}
 
-    def fake_urlopen(request: Any, timeout: float) -> FakeHTTPResponse:
-        request_values["request"] = request
-        request_values["timeout"] = timeout
-        return FakeHTTPResponse(json.dumps(payload).encode())
+    def fake_search(**kwargs: Any) -> list[dict[str, str]]:
+        calls.update(kwargs)
+        return [
+            {
+                "title": "RAG results",
+                "href": "https://example.org/rag",
+                "body": "A useful discovery snippet.",
+                "date": "2026-09-22T12:30:00Z",
+            }
+        ]
 
-    monkeypatch.setattr(brave, "urlopen", fake_urlopen)
-    provider = BraveSearchProvider(SecretStr("brave-secret"))
+    provider = DDGSSearchProvider(search=fake_search)
     results = provider.search(WebSearchInput(query="RAG", max_results=4))
 
-    assert results.provider_metadata["provider"] == "brave"
+    assert results.provider_metadata == {"provider": "ddgs", "backend": "duckduckgo"}
     assert results.results[0].source == "example.org"
     assert results.results[0].published_at is not None
-    assert request_values["timeout"] == 8
-    assert request_values["request"].get_header("X-subscription-token") == "brave-secret"
-    assert "count=4" in request_values["request"].full_url
+    assert calls == {
+        "query": "RAG",
+        "max_results": 4,
+        "backend": "duckduckgo",
+        "timelimit": None,
+    }
 
 
-def test_brave_provider_malformed_response_becomes_normalized_tool_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(brave, "urlopen", lambda *_args, **_kwargs: FakeHTTPResponse(b"not-json"))
-    tool = WebSearchTool(provider=BraveSearchProvider(SecretStr("key")))
+def test_ddgs_provider_maps_requested_date_window_to_backend_filter() -> None:
+    captured: dict[str, Any] = {}
+
+    def fake_search(**kwargs: Any) -> list[dict[str, str]]:
+        captured.update(kwargs)
+        return []
+
+    DDGSSearchProvider(search=fake_search).search(
+        WebSearchInput(
+            query="RAG",
+            max_results=2,
+            start=datetime(2026, 9, 17, tzinfo=timezone.utc),
+            end=datetime(2026, 9, 24, tzinfo=timezone.utc),
+        )
+    )
+
+    assert captured["query"] == "RAG"
+    assert captured["timelimit"] == "w"
+
+
+def test_ddgs_provider_malformed_response_becomes_normalized_tool_failure() -> None:
+    tool = WebSearchTool(
+        provider=DDGSSearchProvider(search=lambda **_kwargs: [{"title": "missing URL"}])
+    )
 
     result = tool.execute(
         make_call(ToolName.WEB_SEARCH, WebSearchInput(query="topic", max_results=2))
@@ -191,30 +189,28 @@ def test_brave_provider_malformed_response_becomes_normalized_tool_failure(
     assert result.failure.category is FailureCategory.INVALID_RESPONSE
 
 
-def test_brave_http_and_timeout_failures_are_typed(monkeypatch: pytest.MonkeyPatch) -> None:
-    def http_failure(*_args: Any, **_kwargs: Any) -> None:
-        raise HTTPError(brave.BRAVE_SEARCH_ENDPOINT, 503, "failure", {}, None)
-
-    monkeypatch.setattr(brave, "urlopen", http_failure)
-    provider = BraveSearchProvider(SecretStr("key"))
-    with pytest.raises(BraveSearchError) as failure:
-        provider.search(WebSearchInput(query="topic", max_results=1))
-    assert failure.value.category == "server_error"
-    assert failure.value.retryable
-
-    tool = WebSearchTool(
-        provider=BraveSearchProvider(SecretStr("key"))
+def test_ddgs_timeout_and_rate_limit_failures_are_typed() -> None:
+    timeout_tool = WebSearchTool(
+        provider=DDGSSearchProvider(
+            search=lambda **_kwargs: (_ for _ in ()).throw(TimeoutError())
+        )
     )
-    monkeypatch.setattr(
-        brave,
-        "urlopen",
-        lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError()),
-    )
-    result = tool.execute(
+    timeout_result = timeout_tool.execute(
         make_call(ToolName.WEB_SEARCH, WebSearchInput(query="topic", max_results=1))
     )
-    assert result.failure is not None
-    assert result.failure.category is FailureCategory.TIMEOUT
+    assert timeout_result.failure is not None
+    assert timeout_result.failure.category is FailureCategory.TIMEOUT
+
+    class RatelimitException(Exception):
+        pass
+
+    rate_limited = DDGSSearchProvider(
+        search=lambda **_kwargs: (_ for _ in ()).throw(RatelimitException())
+    )
+    with pytest.raises(DDGSSearchError) as failure:
+        rate_limited.search(WebSearchInput(query="topic", max_results=1))
+    assert failure.value.category == "rate_limited"
+    assert failure.value.retryable
 
 
 def test_url_fetch_normalizes_html_and_truncates_extracted_text() -> None:

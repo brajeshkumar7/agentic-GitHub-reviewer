@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
+import re
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -29,10 +33,31 @@ _SYSTEM_PROMPTS = {
 class GroqLLMError(RuntimeError):
     """Sanitized provider error; the message never includes request secrets."""
 
-    def __init__(self, category: str, *, retryable: bool) -> None:
+    def __init__(
+        self, category: str, *, retryable: bool,
+        retry_after_seconds: float | None = None,
+    ) -> None:
         self.category = category
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
         super().__init__(f"Groq request failed ({category})")
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Parse only bounded header text; never expose provider response bodies."""
+    if not value or len(value) > 128:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        try:
+            deadline = parsedate_to_datetime(value)
+            if deadline.tzinfo is None:
+                return None
+            seconds = max(0.0, (deadline - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            return None
+    return seconds if math.isfinite(seconds) and seconds >= 0 else None
 
 
 class GroqLLMClient:
@@ -51,11 +76,18 @@ class GroqLLMClient:
         if key is None or model is None:
             raise GroqLLMError("missing_configuration", retryable=False)
 
+        try:
+            schema = json.loads(expected_schema)
+        except (ValueError, TypeError):
+            raise GroqLLMError("invalid_expected_schema", retryable=False) from None
+        request_payload = dict(payload)
+        if request_payload.get("schema") == schema:
+            request_payload.pop("schema", None)
         user_content = json.dumps(
             {
                 "operation": operation,
-                "payload": payload,
-                "expected_schema": expected_schema,
+                "payload": request_payload,
+                "expected_schema": schema,
             },
             ensure_ascii=True,
             separators=(",", ":"),
@@ -73,6 +105,11 @@ class GroqLLMClient:
             "temperature": 0.1,
             "max_completion_tokens": MAX_GROQ_COMPLETION_TOKENS,
         }
+        # GPT-OSS uses reasoning tokens within the completion budget. Low effort
+        # is sufficient for the constrained planning/synthesis tasks here and
+        # avoids spending the full budget before producing the JSON response.
+        if model in {"openai/gpt-oss-20b", "openai/gpt-oss-120b"}:
+            request_body["reasoning_effort"] = "low"
         request_data = json.dumps(request_body).encode("utf-8")
         if len(request_data) > MAX_GROQ_REQUEST_BYTES:
             raise GroqLLMError("oversized_request", retryable=False)
@@ -83,6 +120,7 @@ class GroqLLMClient:
                 "Authorization": f"Bearer {key.get_secret_value()}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                "User-Agent": "research-intelligence-agent/0.1",
             },
             method="POST",
         )
@@ -91,8 +129,25 @@ class GroqLLMClient:
                 body = response.read(MAX_GROQ_RESPONSE_BYTES + 1)
         except HTTPError as error:
             retryable = error.code == 429 or 500 <= error.code < 600
-            category = "rate_limited" if error.code == 429 else "http_error"
-            raise GroqLLMError(category, retryable=retryable) from None
+            retry_after = _retry_after_seconds(
+                error.headers.get("Retry-After") if error.headers else None
+            )
+            provider_code: str | None = None
+            try:
+                error_payload = json.loads(error.read(16_384))
+                raw_code = error_payload.get("error", {}).get("code")
+                if isinstance(raw_code, str) and re.fullmatch(r"[a-zA-Z0-9_-]{1,64}", raw_code):
+                    provider_code = raw_code.lower()
+            except (AttributeError, json.JSONDecodeError, TypeError, UnicodeDecodeError, OSError):
+                pass
+            finally:
+                error.close()
+            category = f"http_{error.code}"
+            if provider_code is not None:
+                category = f"{category}_{provider_code}"
+            raise GroqLLMError(
+                category, retryable=retryable, retry_after_seconds=retry_after
+            ) from None
         except (TimeoutError, URLError, OSError):
             raise GroqLLMError("transport_error", retryable=True) from None
 

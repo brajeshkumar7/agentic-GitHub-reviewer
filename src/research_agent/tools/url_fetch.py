@@ -65,7 +65,13 @@ class FetchResponse:
 class _PublicPinnedHTTPSConnection(http.client.HTTPSConnection):
     """Connect to a validated numeric IP while retaining hostname TLS checks."""
 
-    def _create_connection(
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # HTTPConnection.__init__ installs an instance attribute which shadows
+        # a same-named subclass method. Bind our connector after initialization.
+        self._create_connection = self._connect_public_address
+
+    def _connect_public_address(
         self,
         address: tuple[str, int],
         timeout: float | object = socket._GLOBAL_DEFAULT_TIMEOUT,
@@ -92,7 +98,6 @@ class _PublicHTTPSHandler(HTTPSHandler):
             _PublicPinnedHTTPSConnection,
             request,
             context=self._context,
-            check_hostname=self._check_hostname,
         )
 
 
@@ -365,13 +370,13 @@ class URLFetchTool:
                 message="Page request timed out or could not connect.",
                 started_at=started_at,
             )
-        except Exception:
+        except Exception as error:
             return failed_tool_result(
                 call_id=call.call_id,
                 run_id=call.run_id,
                 step_id=call.step_id,
                 category=FailureCategory.INVALID_RESPONSE,
                 retryability=Retryability.NON_RETRYABLE,
-                message="Page fetch failed unexpectedly; response details were omitted.",
+                message=f"Page fetch failed unexpectedly ({type(error).__name__}); response details were omitted.",
                 started_at=started_at,
             )

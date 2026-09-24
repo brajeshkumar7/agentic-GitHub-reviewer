@@ -24,6 +24,9 @@ from research_agent.models import (
     Plan,
     PlanStep,
     Goal,
+    SearchResults,
+    SearchResultReference,
+    URLFetchInput,
     RecoveryAction,
     RecoveryKind,
     RecoveryReason,
@@ -72,9 +75,9 @@ class ExecutionEngine:
 
         plan: Plan | None = None
         try:
+            plan = Plan.model_validate(validated_plan.plan.model_dump())
             if state.lifecycle_state != RunState.PLAN_VALIDATION:
                 raise ValueError("execution requires PLAN_VALIDATION state")
-            plan = Plan.model_validate(validated_plan.plan.model_dump())
             if plan.goal_id != state.goal.goal_id:
                 raise ValueError("validated plan does not belong to this run's goal")
             if state.active_plan is not None and state.active_plan.plan_id != plan.plan_id:
@@ -97,6 +100,15 @@ class ExecutionEngine:
                     step.id: StepStatus.FAILED for step in plan.steps
                 }
                 state.retry_counts = {step.id: 0 for step in plan.steps}
+                for step in plan.steps:
+                    self._emit(
+                        state,
+                        EventType.STEP_FAILED,
+                        EventOutcome.FAILED,
+                        "Step was not executed because a plan precondition failed.",
+                        step_id=step.id,
+                        tool_name=step.tool_name,
+                    )
             self._fail_run(
                 state,
                 f"Plan execution precondition failed ({type(error).__name__}).",
@@ -109,12 +121,6 @@ class ExecutionEngine:
             return state
 
         assert plan is not None
-        self._emit(
-            state,
-            EventType.PLAN_VALIDATED,
-            EventOutcome.SUCCEEDED,
-            "Validated plan accepted by the execution engine.",
-        )
         self._transition(state, RunState.EXECUTING)
 
         ordered_steps = self._topological_order(plan)
@@ -196,6 +202,8 @@ class ExecutionEngine:
 
             try:
                 tool = self._registry.get(tool_name.value)
+                if isinstance(arguments, SearchResultReference):
+                    arguments = self._resolve_search_reference(arguments, state)
                 validated_arguments = self._registry.validate_arguments(
                     tool_name.value, arguments
                 )
@@ -246,6 +254,15 @@ class ExecutionEngine:
                     attempt=attempt,
                 )
                 result = injected_result
+            elif tool_name == ToolName.URL_FETCH and not self._url_is_authorized(
+                validated_arguments, state
+            ):
+                result = self._failure_result(
+                    call,
+                    FailureCategory.UNSAFE_URL,
+                    Retryability.NON_RETRYABLE,
+                    "Fetch URL was not present in the goal or a prior validated search result.",
+                )
             else:
                 result = self._dispatch_and_validate(call, tool)
             state.tool_results.append(result)
@@ -344,6 +361,14 @@ class ExecutionEngine:
                 attempt=attempt + 1,
             )
         if action.kind == RecoveryKind.REPLAN:
+            self._emit(
+                state,
+                EventType.REPLAN_STARTED,
+                EventOutcome.STARTED,
+                "Starting the single permitted validated plan revision.",
+                step_id=step.id,
+                tool_name=step.tool_name,
+            )
             if self._replanner is None:
                 self._fail_run(state, "Recovery selected replanning without a configured planner.")
                 return None
@@ -369,6 +394,14 @@ class ExecutionEngine:
                 state.failures.append(validated)
                 state.step_statuses[step.id] = StepStatus.FAILED
                 state.step_failures[step.id] = failure
+                self._emit(
+                    state,
+                    EventType.STEP_FAILED,
+                    EventOutcome.FAILED,
+                    "Step failed because the revised plan did not validate.",
+                    step_id=step.id,
+                    tool_name=step.tool_name,
+                )
                 self._emit(
                     state,
                     EventType.PLAN_REJECTED,
@@ -440,6 +473,14 @@ class ExecutionEngine:
             else:
                 state.step_statuses[step.id] = StepStatus.FAILED
                 state.step_failures[step.id] = failure
+                self._emit(
+                    state,
+                    EventType.STEP_FAILED,
+                    EventOutcome.FAILED,
+                    "Original step remained failed after its replacement failed.",
+                    step_id=step.id,
+                    tool_name=step.tool_name,
+                )
             return None
         self._emit(
             state,
@@ -541,6 +582,21 @@ class ExecutionEngine:
             self._transition(state, RunState.RECOVERY)
         if state.lifecycle_state == RunState.RECOVERY:
             self._transition(state, RunState.EXECUTING)
+        self._emit(
+            state,
+            EventType.STEP_FAILED,
+            EventOutcome.FAILED,
+            f"Step failed ({failure.category.value}).",
+            step_id=step_id,
+            tool_name=(
+                next(
+                    (step.tool_name for step in state.active_plan.steps if step.id == step_id),
+                    None,
+                )
+                if state.active_plan is not None
+                else None
+            ),
+        )
 
     def _make_failure(
         self,
@@ -569,7 +625,8 @@ class ExecutionEngine:
         for step in plan.steps:
             if step.tool_name not in registered_names:
                 raise LookupError(f"tool is not registered: {step.tool_name.value}")
-            self._registry.validate_arguments(step.tool_name.value, step.input)
+            if not isinstance(step.input, SearchResultReference):
+                self._registry.validate_arguments(step.tool_name.value, step.input)
             if step.fallback is not None:
                 if step.fallback.tool_name not in registered_names:
                     raise LookupError(
@@ -578,6 +635,39 @@ class ExecutionEngine:
                 self._registry.validate_arguments(
                     step.fallback.tool_name.value, step.fallback.arguments
                 )
+
+    @staticmethod
+    def _resolve_search_reference(
+        reference: SearchResultReference, state: AgentState,
+    ) -> URLFetchInput:
+        if state.step_statuses.get(reference.search_step_id) != StepStatus.SUCCEEDED:
+            raise ValueError("search dependency has not succeeded")
+        call_ids = {call.call_id for call in state.tool_calls
+                    if call.step_id == reference.search_step_id
+                    and call.tool_name == ToolName.WEB_SEARCH}
+        for result in reversed(state.tool_results):
+            if (result.call_id in call_ids
+                    and result.status == ToolResultStatus.SUCCEEDED
+                    and isinstance(result.output, SearchResults)):
+                if reference.result_index >= len(result.output.results):
+                    raise ValueError("search result index is unavailable")
+                return URLFetchInput(url=result.output.results[reference.result_index].url)
+        raise ValueError("search result is unavailable")
+
+    @staticmethod
+    def _url_is_authorized(arguments: BaseModel, state: AgentState) -> bool:
+        url = getattr(arguments, "url", None)
+        if not isinstance(url, str):
+            return False
+        if url in state.goal.text:
+            return True
+        normalized_url = url.rstrip("/")
+        return any(
+            result.status == ToolResultStatus.SUCCEEDED
+            and isinstance(result.output, SearchResults)
+            and any(candidate.url.rstrip("/") == normalized_url for candidate in result.output.results)
+            for result in state.tool_results
+        )
 
     @staticmethod
     def _topological_order(plan: Plan) -> list[Any]:
@@ -657,6 +747,7 @@ class ExecutionEngine:
         call_id: UUID | None = None,
         tool_name: ToolName | None = None,
         attempt: int | None = None,
+        metadata: dict[str, Any] | None = None,
     ) -> None:
         event = state.record_event(
             event_type,
@@ -666,6 +757,7 @@ class ExecutionEngine:
             call_id=call_id,
             tool_name=tool_name,
             attempt=attempt,
+            metadata=metadata,
         )
         self._event_logger.emit(event)
 

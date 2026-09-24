@@ -9,6 +9,7 @@ from pydantic import ValidationError
 
 from research_agent.evidence_store import DuplicateEvidenceError, EvidenceStore
 from research_agent.models import (
+    EventType,
     Evidence,
     EvidenceVerification,
     Failure,
@@ -29,6 +30,46 @@ from research_agent.models import (
 )
 from research_agent.report_generator import ReportGenerator
 from research_agent.state import AgentState
+from research_agent.providers.groq import GroqLLMError
+
+
+@pytest.mark.parametrize("delay,retryable,expected_calls", [(0, True, 2), (90, True, 1), (0, False, 1)])
+def test_synthesis_provider_failure_preserves_category_and_budget(delay, retryable, expected_calls) -> None:
+    goal, plan, state = context()
+    store = EvidenceStore()
+    store.add(evidence_for(goal))
+    calls = []
+    waits = []
+    class LimitedLLM:
+        def generate(self, *args):
+            calls.append(args)
+            raise GroqLLMError("http_429_rate_limit_exceeded", retryable=retryable,
+                               retry_after_seconds=delay)
+    report = ReportGenerator(LimitedLLM(), store, sleep=waits.append).generate(goal, plan, state)
+    assert len(calls) == expected_calls
+    assert waits == ([0] if expected_calls == 2 else [])
+    assert report.status is ReportStatus.PARTIAL
+    assert report.failures[0].category is FailureCategory.RATE_LIMIT
+    assert "http_429_rate_limit_exceeded" in report.failures[0].message
+    assert report.evidence and not report.findings
+
+
+def test_synthesis_transient_retry_succeeds() -> None:
+    goal, plan, state = context()
+    store = EvidenceStore()
+    stored_id = store.add(evidence_for(goal))
+    calls = []
+    waits = []
+    class TransientLLM:
+        def generate(self, *args):
+            calls.append(args)
+            if len(calls) == 1:
+                raise GroqLLMError("http_503", retryable=True)
+            return LLMResponse(content=synthesis_content(stored_id), provider="fake")
+    report = ReportGenerator(TransientLLM(), store, sleep=waits.append).generate(goal, plan, state)
+    assert report.status is ReportStatus.COMPLETED
+    assert waits == [1]
+    assert any(e.event_type is EventType.RETRY_ATTEMPTED for e in state.events)
 
 
 class FakeLLM:
@@ -106,6 +147,9 @@ def test_successful_report_has_json_markdown_and_ledger_only_sources() -> None:
     markdown = report.to_markdown()
 
     assert report.status is ReportStatus.COMPLETED
+    assert EventType.SYNTHESIS_STARTED in [event.event_type for event in state.events]
+    assert EventType.FINAL_REPORT_CREATED in [event.event_type for event in state.events]
+    assert EventType.EXECUTION_COMPLETED in [event.event_type for event in state.events]
     assert set(payload) == {
         "goal", "status", "plan", "execution_summary", "failures", "recoveries",
         "evidence", "findings", "limitations", "sources",

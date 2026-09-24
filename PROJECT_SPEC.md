@@ -33,6 +33,7 @@ Build a Python CLI agent that accepts a natural-language research goal, creates 
 ### Input
 
 - Required: one natural-language goal as the CLI positional argument.
+- Optional: `--events-jsonl PATH` appends structured, redacted execution events for this run.
 - Failure demonstration configuration is environment-only and disabled by default: `AGENT_INJECT_FAILURE=true`, `AGENT_FAILURE_MODE=tool_timeout|malformed_tool_response`, and optional `AGENT_FAILURE_TOOL=web_search|url_fetch|calculator`. One failure is injected per run and routed through ordinary recovery.
 - Capture `run_started_at` once in UTC and use it for all relative date windows.
 - Missing goal is a CLI usage error and causes no model/tool calls.
@@ -68,6 +69,13 @@ Tools accept validated JSON and return typed success or typed failure. They do n
 
 ### URL/page fetch
 
+- Plan-only binding: a URL-fetch step may use input
+  `{ "search_step_id": "search_1", "result_index": 0 }` with `search_1`
+  as a direct web-search dependency. The executor resolves the result after
+  search succeeds, validates a concrete HTTPS URL, and applies normal URL
+  authorization before dispatch. Indices are bounded by the search-result cap;
+  unavailable results produce a controlled failure. No arbitrary interpolation.
+
 - Input: one HTTPS URL from the validated goal or search results.
 - Output: `{final_url, title, publisher, published_at?, extracted_text, retrieved_at, truncated, status}`.
 - Restrict to public HTTPS port 443 content per `SECURITY.md`; reject unsafe destinations, redirects, content types, or oversized pages. Never allow local-file or private-network access.
@@ -82,9 +90,9 @@ Tools accept validated JSON and return typed success or typed failure. They do n
 
 ## Observable execution events
 
-Emit ordered structured events: `run_started`, `plan_created`, `plan_rejected`/`plan_validated`, `step_started`, `tool_call_started`, `tool_call_succeeded`/`tool_call_failed`, `failure_injected`, `recovery_started`, `retry_attempted`, `recovery_applied`, `evidence_recorded`, `step_completed`/`step_skipped`, `report_validated`, `run_completed`.
+Emit ordered structured events: `GOAL_RECEIVED`, `PLAN_CREATED`, `PLAN_VALIDATED`, `STEP_STARTED`, `TOOL_CALL_STARTED`, `TOOL_CALL_SUCCEEDED`, `TOOL_CALL_FAILED`, `RECOVERY_STARTED`, `RETRY_ATTEMPTED`, `REPLAN_STARTED`, `STEP_COMPLETED`, `STEP_FAILED`, `SYNTHESIS_STARTED`, `FINAL_REPORT_CREATED`, and `EXECUTION_COMPLETED`. Additional state-transition, injection, evidence, rejection, and skip events may be emitted where applicable.
 
-Each event includes `run_id`, UTC timestamp, event type, optional `step_id`/`tool_name`, attempt number, outcome, duration when available, and sanitized summary. Never log auth headers, API keys, full prompts, or unbounded page content.
+Every event includes `event_id`, `execution_id`, UTC `timestamp`, `event_type`, `status`, and structured `metadata`; `step_id` and `tool_name` are present when applicable. Event IDs are unique; event sequence is strictly increasing within one execution. JSONL output contains one validated event object per line. The CLI renders the structured plan and concise action, outcome, failure, and recovery summaries to standard error. Never log auth headers, API keys, sensitive environment variables, full prompts, hidden model reasoning, or unbounded page content.
 
 ## Failure recovery
 

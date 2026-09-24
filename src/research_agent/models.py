@@ -110,25 +110,31 @@ class EvidenceVerification(str, Enum):
 
 
 class EventType(str, Enum):
-    STATE_TRANSITION = "state_transition"
-    RUN_STARTED = "run_started"
-    PLAN_CREATED = "plan_created"
-    PLAN_REJECTED = "plan_rejected"
-    PLAN_VALIDATED = "plan_validated"
-    STEP_STARTED = "step_started"
-    TOOL_CALL_STARTED = "tool_call_started"
-    TOOL_CALL_SUCCEEDED = "tool_call_succeeded"
-    TOOL_CALL_FAILED = "tool_call_failed"
-    RETRY_SCHEDULED = "retry_scheduled"
-    RETRY_ATTEMPTED = "retry_attempted"
-    RECOVERY_STARTED = "recovery_started"
-    RECOVERY_APPLIED = "recovery_applied"
-    FAILURE_INJECTED = "failure_injected"
-    EVIDENCE_RECORDED = "evidence_recorded"
-    STEP_COMPLETED = "step_completed"
-    STEP_SKIPPED = "step_skipped"
-    REPORT_VALIDATED = "report_validated"
-    RUN_COMPLETED = "run_completed"
+    GOAL_RECEIVED = "GOAL_RECEIVED"
+    STATE_TRANSITION = "STATE_TRANSITION"
+    RUN_STARTED = "RUN_STARTED"
+    PLAN_CREATED = "PLAN_CREATED"
+    PLAN_REJECTED = "PLAN_REJECTED"
+    PLAN_VALIDATED = "PLAN_VALIDATED"
+    STEP_STARTED = "STEP_STARTED"
+    TOOL_CALL_STARTED = "TOOL_CALL_STARTED"
+    TOOL_CALL_SUCCEEDED = "TOOL_CALL_SUCCEEDED"
+    TOOL_CALL_FAILED = "TOOL_CALL_FAILED"
+    RETRY_SCHEDULED = "RETRY_SCHEDULED"
+    RETRY_ATTEMPTED = "RETRY_ATTEMPTED"
+    RECOVERY_STARTED = "RECOVERY_STARTED"
+    RECOVERY_APPLIED = "RECOVERY_APPLIED"
+    REPLAN_STARTED = "REPLAN_STARTED"
+    FAILURE_INJECTED = "FAILURE_INJECTED"
+    EVIDENCE_RECORDED = "EVIDENCE_RECORDED"
+    STEP_COMPLETED = "STEP_COMPLETED"
+    STEP_FAILED = "STEP_FAILED"
+    STEP_SKIPPED = "STEP_SKIPPED"
+    SYNTHESIS_STARTED = "SYNTHESIS_STARTED"
+    FINAL_REPORT_CREATED = "FINAL_REPORT_CREATED"
+    REPORT_VALIDATED = "REPORT_VALIDATED"
+    EXECUTION_COMPLETED = "EXECUTION_COMPLETED"
+    RUN_COMPLETED = "RUN_COMPLETED"
 
 
 class EventOutcome(str, Enum):
@@ -378,6 +384,13 @@ class Calculation(StrictModel):
 ToolArguments: TypeAlias = WebSearchInput | URLFetchInput | CalculatorInput
 
 
+class SearchResultReference(StrictModel):
+    """Plan-only binding to one result from a direct search dependency."""
+
+    search_step_id: Annotated[StrictStr, Field(min_length=1)]
+    result_index: Annotated[int, Field(ge=0, lt=MAX_SEARCH_RESULTS)]
+
+
 def _validate_tool_arguments(tool_name: ToolName, arguments: ToolArguments) -> None:
     expected: dict[ToolName, type[StrictModel]] = {
         ToolName.WEB_SEARCH: WebSearchInput,
@@ -416,7 +429,7 @@ class PlanStep(StrictModel):
         ),
     ]
     tool_name: ToolName
-    input: ToolArguments = Field(
+    input: ToolArguments | SearchResultReference = Field(
         validation_alias=AliasChoices("input", "arguments"),
         serialization_alias="arguments",
     )
@@ -438,7 +451,13 @@ class PlanStep(StrictModel):
 
     @model_validator(mode="after")
     def validate_step(self) -> PlanStep:
-        _validate_tool_arguments(self.tool_name, self.input)
+        if isinstance(self.input, SearchResultReference):
+            if self.tool_name != ToolName.URL_FETCH:
+                raise ValueError("search references are permitted only for URL fetch")
+            if self.input.search_step_id not in self.dependencies:
+                raise ValueError("search reference requires a direct dependency")
+        else:
+            _validate_tool_arguments(self.tool_name, self.input)
         if self.status != StepStatus.PENDING:
             raise ValueError("new plan steps must have PENDING status")
         if len(set(self.dependencies)) != len(self.dependencies):
@@ -456,7 +475,7 @@ class PlanStep(StrictModel):
         return self.objective
 
     @property
-    def arguments(self) -> ToolArguments:
+    def arguments(self) -> ToolArguments | SearchResultReference:
         return self.input
 
     @property
@@ -483,8 +502,13 @@ class Plan(StrictModel):
         if len(set(step_ids)) != len(step_ids):
             raise ValueError("plan step IDs must be unique")
         known_ids = set(step_ids)
+        by_id = {step.id: step for step in self.steps}
         dependencies: dict[str, list[str]] = {}
         for step in self.steps:
+            if isinstance(step.input, SearchResultReference):
+                source = by_id.get(step.input.search_step_id)
+                if source is None or source.tool_name != ToolName.WEB_SEARCH:
+                    raise ValueError("fetch reference must identify a search step")
             missing = set(step.dependencies) - known_ids
             if missing:
                 raise ValueError(f"unknown dependencies for {step.id}: {sorted(missing)}")
@@ -609,6 +633,8 @@ class Evidence(StrictModel):
 
 class ExecutionEvent(StrictModel):
     event_id: UUID = Field(default_factory=uuid4)
+    execution_id: UUID
+    # `run_id` is retained as a compatibility field for existing failure/report references.
     run_id: UUID
     sequence: Annotated[int, Field(ge=1)]
     timestamp: AwareDatetime
@@ -618,8 +644,30 @@ class ExecutionEvent(StrictModel):
     call_id: UUID | None = None
     tool_name: ToolName | None = None
     attempt: Annotated[int, Field(ge=1, le=MAX_TOOL_ATTEMPTS)] | None = None
-    outcome: EventOutcome
-    summary: Annotated[StrictStr, Field(min_length=1)]
+    status: EventOutcome
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("timestamp")
+    @classmethod
+    def event_time_is_utc(cls, value: datetime) -> datetime:
+        return value.astimezone(timezone.utc)
+
+    @model_validator(mode="after")
+    def execution_and_run_ids_match(self) -> ExecutionEvent:
+        if self.execution_id != self.run_id:
+            raise ValueError("execution_id must match run_id")
+        return self
+
+    @property
+    def outcome(self) -> EventOutcome:
+        """Compatibility accessor; serialized event contract calls this `status`."""
+        return self.status
+
+    @property
+    def summary(self) -> str:
+        """Return the concise, public-safe summary stored in event metadata."""
+        value = self.metadata.get("summary")
+        return value if isinstance(value, str) else self.event_type.value
 
 
 class RecoveryAction(StrictModel):

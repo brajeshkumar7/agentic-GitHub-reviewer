@@ -18,7 +18,6 @@ class AgentSettings(StrictModel):
 
     groq_api_key: SecretStr | None = None
     groq_model: str | None = None
-    brave_search_api_key: SecretStr | None = None
     agent_inject_failure: bool = False
     agent_failure_mode: FailureInjectionMode | None = None
     agent_failure_tool: ToolName | None = None
@@ -43,7 +42,6 @@ class AgentSettings(StrictModel):
             environ = os.environ
         key = environ.get("GROQ_API_KEY", "").strip()
         model = environ.get("GROQ_MODEL", "").strip()
-        brave_key = environ.get("BRAVE_SEARCH_API_KEY", "").strip()
         inject_text = environ.get("AGENT_INJECT_FAILURE", "false").strip().lower()
         if inject_text not in {"true", "false"}:
             raise ValueError("AGENT_INJECT_FAILURE must be true or false")
@@ -57,7 +55,6 @@ class AgentSettings(StrictModel):
         return cls(
             groq_api_key=SecretStr(key) if key else None,
             groq_model=model or None,
-            brave_search_api_key=SecretStr(brave_key) if brave_key else None,
             agent_inject_failure=inject_text == "true",
             agent_failure_mode=failure_mode,
             agent_failure_tool=failure_tool,

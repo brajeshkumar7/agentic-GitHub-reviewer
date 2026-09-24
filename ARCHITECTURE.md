@@ -4,6 +4,20 @@ This is the architecture contract for the Autonomous Research Intelligence Agent
 
 ## Architecture principles
 
+- D-044: planner literal fetch inputs/fallbacks require a URL supplied in the
+  goal; otherwise bounded repair requests a search-result reference. Independently,
+  PlanValidator requires literal URLs to occur in the goal or already collected
+  validated search results. Executor authorization remains the final check.
+
+- D-043: URL-fetch PlanStep input may be a plan-only `SearchResultReference`
+  `{search_step_id, result_index}` instead of a concrete `URLFetchInput`.
+  The referenced step must be a direct dependency using web_search. The engine
+  resolves the zero-based index from that step's successful validated results
+  before argument validation and ToolCall creation. Only a concrete HTTPS URL
+  reaches the registry/tool. Missing results fail without dispatch; existing
+  URL authorization, DNS/redirect checks, and execution budgets still apply.
+  Fallback arguments remain concrete. This is not general template evaluation.
+
 - Python CLI, one process, simple modules, no multi-agent framework.
 - `AgentController` coordinates one run; `ExecutionEngine` alone owns execution state and policy.
 - LLM output is an untrusted proposal. Only validated plans reach the engine; the model never calls tools, chooses recovery actions, or advances state.
@@ -15,22 +29,22 @@ This is the architecture contract for the Autonomous Research Intelligence Agent
 
 | Component | Responsibility | Interface contract |
 |---|---|---|
-| `AgentController` | CLI-facing run coordinator. Constructs `Goal` and `AgentState`, invokes planner/validator/engine/synthesis in order, handles terminal output. Does not directly execute tools. | `run(goal_text: str) -> FinalReport` |
+| `AgentController` | CLI-facing run coordinator. Resolves the run time window, constructs `Goal` and `AgentState`, invokes planner/validator/engine/evidence collection/reporting in order, and handles bounded failure reports. Shares one logger across components; never directly executes tools. | `run(goal_text: str) -> FinalReport` |
 | `Planner` | Requests a structured `Plan` proposal from the LLM using fixed prompt templates, goal, tool metadata/schema read from `ToolRegistry`, the configured step limit, and bounded recovery context. It parses raw response text into strict `Plan` data and does not decide whether a plan is authorized. | `propose(goal: Goal, context: PlanningContext) -> PlanProposal`; reads `ToolRegistry.metadata()` |
 | `PlanValidator` | Strictly validates schemas, step/dependency limits, tool allowlist and argument schemas, fallback declarations, and plan safety. Produces an approved plan or validation `Failure`. | `validate(goal: Goal, proposal: PlanProposal, state: AgentState, registry: ToolRegistry) -> ValidatedPlan | Failure` |
-| `ExecutionEngine` | Sole stateful executor. Validates its run preconditions and tool calls, selects ready steps in stable plan order, checks dependencies and budgets, dispatches through the registry, stores typed results, and emits events. It delegates failed calls to `FailureHandler`, applies bounded retry/fallback, and can request one validated replan through an injected planner callback. | `execute(plan: ValidatedPlan, state: AgentState) -> AgentState` |
+| `ExecutionEngine` | Sole stateful executor. Validates its run preconditions and tool calls, selects ready steps in stable plan order, checks dependencies and budgets, dispatches through the registry, stores typed results, and emits events. It allows URL fetch only for a URL present in the goal or an earlier validated search result. It delegates failures to `FailureHandler`, applies bounded retry/fallback, and can request one validated replan through an injected planner callback. | `execute(plan: ValidatedPlan, state: AgentState) -> AgentState` |
 | `AgentState` | Run-local state record: lifecycle state, goal, active plan/version, per-step statuses and failures, tool calls/results, retry counts, events, evidence IDs, and recovery history. Validates allowed state transitions. No durable persistence in v1. | Strict model; `transition(target)` rejects illegal transitions; `record_event(...)` assigns ordered sequence numbers. |
 | `ToolRegistry` | Registers only the three approved tool names, retrieves by name, exposes input/output schema and timeout metadata, validates arguments/results, and converts dispatch errors to typed `ToolResult`. It cannot be modified by planner/tool output at runtime. | `register(tool)`, `get(name)`, `metadata()`, `validate_arguments(name, args)`, `dispatch(call: ToolCall) -> ToolResult` |
-| `WebSearchTool` | Searches through a provider-neutral interface; current isolated Brave adapter returns ordered bounded candidate results with source host and optional publication timestamp. Snippets are discovery leads only. | `execute(call: ToolCall[WebSearchInput]) -> ToolResult[SearchResults]` |
+| `WebSearchTool` | Searches through a provider-neutral interface; the isolated DDGS adapter uses the DuckDuckGo backend without API credentials and returns ordered bounded candidate results with source host and optional publication timestamp. Snippets are discovery leads only. | `execute(call: ToolCall[WebSearchInput]) -> ToolResult[SearchResults]` |
 | `URLFetchTool` | Fetches one public HTTPS page with DNS-pinned public-IP connections, no proxy, redirect revalidation, bounded response/text, status and content-type checks, and normalized extraction. | `execute(call: ToolCall[URLFetchInput]) -> ToolResult[FetchedPage]` |
 | `CalculatorTool` | Performs the approved Decimal operations or evaluates the restricted arithmetic grammar in `PROJECT_SPEC.md`; it never calls `eval()` or executes code. | `execute(call: ToolCall[CalculatorInput]) -> ToolResult[Calculation]` |
 | `FailureHandler` | Deterministically classifies failure and selects one permitted `RecoveryAction` from failure type, step/call history, prevalidated fallback, evidence sufficiency, and remaining budgets. | `recover(failure: Failure, state: AgentState, step: PlanStep) -> RecoveryAction` |
 | `EvidenceStore` | Run-local evidence ledger keyed by stable evidence ID and goal. Validates provenance, makes identical additions idempotent, rejects conflicting ID reuse, and returns defensive copies. | `add(evidence: Evidence) -> EvidenceId`; `get(evidence_id: EvidenceId) -> Evidence`; `for_goal(goal_id: GoalId) -> list[Evidence]` |
-| `EventLogger` | Retains ordered structured events and can forward each event to an optional visible trace sink. Summaries are sanitized and exclude secrets, private reasoning, and raw page content. | `emit(event: ExecutionEvent) -> None` |
-| `ReportGenerator` | Loads evidence from `EvidenceStore`, passes verified evidence to `LLMClient` for finding text only, validates evidence references, deterministically projects source records and status, and renders JSON/Markdown. | `generate(goal: Goal, plan: Plan, state: AgentState) -> FinalReport`; `FinalReport.to_json()`; `FinalReport.to_markdown()` |
+| `EventLogger` | Retains ordered, validated events and forwards redacted events to an optional trace sink. `JsonlEventLogger` appends one JSON event per line. The CLI `TraceRenderer` shows only plan objectives, actions, outcomes, and recovery summaries. | `emit(event: ExecutionEvent) -> None`; `JsonlEventLogger(path)` |
+| `ReportGenerator` | Loads retrieval-verified evidence from `EvidenceStore`, passes it to `LLMClient` for finding text only, validates evidence references, deterministically projects source records/status and transitions the run to a terminal state. Source authority ranking and claim-level corroboration remain disclosed limitations. | `generate(goal: Goal, plan: Plan, state: AgentState) -> FinalReport`; `FinalReport.to_json()`; `FinalReport.to_markdown()` |
 | `LLMClient` abstraction | Provider-neutral structured text boundary. The isolated Groq adapter uses its fixed chat-completions endpoint, JSON mode, environment credentials, bounded response size, and a finite timeout. It has no tool registry, callbacks, or function execution. | `generate(operation: LLMOperation, payload: dict, expected_schema: str) -> LLMResponse` |
 
-The table defines logical boundaries. Every tool implements the common `Tool` interface with `name`, `description`, Pydantic `input_schema` and `output_schema`, `timeout_seconds`, and `execute(ToolCall) -> ToolResult`. Planner reads registry metadata; PlanValidator validates every step and fallback argument. The planner does not invoke tools. Execution ends in `SYNTHESIZING` unless an invalid replan/precondition makes the run `FAILED`; report generation determines the final report state.
+The table defines logical boundaries. Every tool implements the common `Tool` interface with `name`, `description`, Pydantic `input_schema` and `output_schema`, `timeout_seconds`, and `execute(ToolCall) -> ToolResult`. Planner reads registry metadata; PlanValidator validates every step and fallback argument. The planner does not invoke tools. `AgentController` emits goal/plan events, while the engine emits step/tool/recovery events and the report generator emits synthesis/final-report events. Execution ends in `SYNTHESIZING` unless an invalid replan/precondition makes the run `FAILED`; report generation determines and records the final report state.
 
 `LLMOperation` is an allowlist containing plan proposal, plan revision, and evidence-grounded research summary only. The LLMClient cannot invoke `ToolRegistry` or mutate `AgentState`.
 
@@ -55,6 +69,8 @@ flowchart TB
     Handler --> Engine
     Engine --> Evidence[EvidenceStore]
     Engine --> Events[EventLogger]
+    Events --> JSONL[(JSONL event log)]
+    Events --> Trace[CLI trace renderer]
     Controller --> Report[ReportGenerator]
     Report --> Evidence
     Report --> LLM
@@ -84,7 +100,7 @@ sequenceDiagram
 
     User->>AC: natural-language goal
     AC->>S: create Goal + RECEIVED state
-    AC->>EL: run_started(goal)
+    AC->>EL: GOAL_RECEIVED(execution_id)
     AC->>S: transition PLANNING
     AC->>P: propose(goal, bounded context)
     P->>R: read available tools and schemas
@@ -108,6 +124,7 @@ sequenceDiagram
         end
     else valid proposal
         V-->>AC: ValidatedPlan
+        AC->>EL: PLAN_CREATED + PLAN_VALIDATED
     end
     AC->>S: transition EXECUTING
     loop each ready step in stable plan order
@@ -140,17 +157,21 @@ sequenceDiagram
     end
     E-->>AC: final execution state
     AC->>S: transition SYNTHESIZING
+    AC->>EL: SYNTHESIS_STARTED
     AC->>RG: generate(goal, plan, state, evidence)
     RG->>L: evidence-bounded summary request
     L-->>RG: summary draft or Failure
     RG->>RG: validate report schema and evidence IDs
     RG->>EL: report validation and final status
+    RG->>EL: FINAL_REPORT_CREATED + EXECUTION_COMPLETED
     RG-->>AC: FinalReport
     AC->>S: transition COMPLETED / PARTIAL / FAILED
     AC-->>User: JSON final report; visible trace on stderr
 ```
 
 ## Deterministic execution policy
+
+- Planner model retries and repairs share two attempts. `Retry-After` is parsed by the provider, while Planner owns the injected sleeper and 60-second maximum wait. Over-budget delays terminate without early retry; missing 429 timing and malformed-plan repairs use a 60-second cooldown. No adapter owns a retry loop. The transport sends the expected schema once as an object (D-041).
 
 - Plans contain at most 8 steps. The engine executes sequentially; among currently ready steps, it uses the order declared in the validated plan. No parallel tool execution.
 - Tool name and argument schemas come from the immutable registry. Model output cannot register tools, set timeouts, set attempt budgets, change status, or select a recovery action.
@@ -247,7 +268,7 @@ Calculator input is either an allowlisted Decimal operation with operands or a r
 
 ### `ExecutionEvent`
 
-`{event_id: UUID, run_id: UUID, sequence: positive int, timestamp: UTC datetime, event_type: RunEventType, state: RunState, step_id: str | null, call_id: UUID | null, attempt: int | null, outcome: started | succeeded | failed | rejected | scheduled | skipped | recovered | completed, summary: sanitized bounded str}`. `RunEventType` is restricted to the observable events in `PROJECT_SPEC.md`; lifecycle transitions are captured on those events' `state` field. Event sequence is strictly increasing per run.
+`{event_id: UUID, execution_id: UUID, run_id: UUID (compatibility alias equal to execution_id), sequence: positive int, timestamp: UTC datetime, event_type: EventType, state: RunState, step_id: str | null, call_id: UUID | null, tool_name: ToolName | null, attempt: positive int | null, status: EventOutcome, metadata: object}`. Event metadata contains only concise application-generated summaries and explicitly approved structured fields such as plan step IDs/objectives/tool names or report status. It excludes raw prompts, raw tool payloads, and secrets. Event sequence is strictly increasing within each execution. `JsonlEventLogger` writes one JSON event per line after redaction; the CLI renderer outputs only the visible trace whitelist.
 
 ### `Failure`
 

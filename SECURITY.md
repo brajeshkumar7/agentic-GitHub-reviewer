@@ -2,9 +2,9 @@
 
 ## API keys and environment variables
 
-- Store `GROQ_API_KEY` and `BRAVE_SEARCH_API_KEY` in environment variables or an ignored local environment file.
+- Store `GROQ_API_KEY` in an environment variable or an ignored local environment file.
 - `GROQ_MODEL` is a non-secret environment setting; never hard-code a model identifier.
-- `BRAVE_SEARCH_API_KEY` is required only for live Brave searches and is read from environment-backed settings.
+- DDGS search uses the public DuckDuckGo backend and has no API key. Search requests and result URLs are still external, untrusted network data subject to provider throttling and availability.
 - Demo injection uses only `AGENT_INJECT_FAILURE`, `AGENT_FAILURE_MODE`, and optional `AGENT_FAILURE_TOOL`; these non-secret settings default to disabled and are validated against fixed enums. Never log raw provider/tool payloads when simulating malformed output.
 - Commit only placeholder `.env.example`; exclude real `.env` files and never place credentials in shell history intentionally.
 - Never put keys in prompts, tool arguments, events, exception messages, screenshots, or sample transcripts.
@@ -22,7 +22,13 @@
 
 ## URL and network restrictions
 
-- Fetch public HTTPS URLs on port 443 only. URLs originate in the user goal or validated search results; do not automatically follow links from page bodies.
+- Search-result plan references permit only a direct search dependency ID and
+  bounded integer result index. Resolve from validated successful tool results;
+  do not evaluate strings, expressions, arbitrary field paths, or page content.
+  The resolved URL undergoes the same authorization and public HTTPS checks as
+  a literal URL. References cannot be dispatched as raw tool arguments.
+
+- Fetch public HTTPS URLs on port 443 only. ExecutionEngine permits fetch URLs only when they appear in the user goal or a prior validated search result; do not automatically follow links from page bodies.
 - Reject URL credentials/user-info, unsupported ports/schemes, localhost, loopback, private, link-local, multicast, and other non-public destinations.
 - Resolve and validate every destination before connecting; pin the socket to a validated globally routable IP while retaining TLS hostname verification; disable environment proxies; validate every redirect target under the same rules; cap redirect count at five.
 - Apply finite timeouts, response-size limits, supported content types, and per-run page/result limits. Never fetch local files, cloud metadata, or internal services.
@@ -36,7 +42,8 @@
 
 ## Logging and data minimization
 
-- Record event types, step/tool IDs, attempts, sanitized summaries, timings, and outcomes.
+- Record event types, execution/step/tool IDs, attempts, sanitized summaries, timings, statuses, and approved metadata only. `EventLogger` redacts values under secret-like keys and common inline bearer/API-key forms before forwarding or JSONL serialization.
+- JSONL event files may contain user goal summaries and public research identifiers. Keep them local, review before sharing, and do not commit generated logs. Logger output must never include environment-variable dumps, full prompts, raw tool payloads, API keys, auth headers, or hidden model reasoning.
 - Do not log API keys, auth headers, full prompts, hidden model reasoning, or full page bodies. Avoid retaining user goals beyond report creation.
 - Review transcripts for secrets and unnecessary personal data before commit; prefer synthetic/fake responses.
 - Reports may contain public URLs and short descriptions. Disclose that fetched public source text is sent to configured Groq for synthesis; do not submit private data or secrets as research content.
